@@ -2,7 +2,7 @@
 
 **This tool was developed as part of doctoral research at the University of South Florida's Muma College of Business.**
 
-LLM Buddy was created to address methodological challenges in conducting rigorous research with Large Language Models. It was used to document 1,555 prompts across 6 Elaborated Action Design Research (eADR) cycles, enabling the discovery of the "Conversational Forking" methodology and providing unprecedented documentation of AI-augmented development processes.
+LLM Buddy was created to address methodological challenges in conducting rigorous research with Large Language Models. It was used to document 1,555 prompts across multiple Elaborated Action Design Research (eADR) cycles, enabling the discovery of the "Conversational Forking" methodology and providing unprecedented documentation of AI-augmented development processes.
 
 **Note**: The original research prompt corpus remains proprietary. This repository provides the tool and representative examples to enable replication of the methodology.
 
@@ -895,3 +895,4 @@ For the tool itself:
 **Last Updated**: January 2025  
 
 **Created by**: Anthony Vigil
+

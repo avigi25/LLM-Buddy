@@ -1,0 +1,5 @@
+mitmproxy==9.0.1
+mcp>=0.31.0
+sqlite3worker==1.0.2
+
+

@@ -1,3 +1,11 @@
+## 🎓 Research Context
+
+**This tool was developed as part of doctoral research at the University of South Florida's Muma College of Business.**
+
+LLM Buddy was created to address methodological challenges in conducting rigorous research with Large Language Models. It was used to document 1,555 prompts across 6 Elaborated Action Design Research (eADR) cycles, enabling the discovery of the "Conversational Forking" methodology and providing unprecedented documentation of AI-augmented development processes.
+
+**Note**: The original research prompt corpus remains proprietary. This repository provides the tool and representative examples to enable replication of the methodology.
+
 # LLM Buddy - Universal Prompt Recording & Management System
 
 A comprehensive solution for capturing, organizing, and analyzing prompts from all major LLM services. LLM Buddy combines proxy-based recording, MCP integration, and a powerful GUI to help you track your AI interactions across ChatGPT, Claude, Gemini, and other platforms.
@@ -861,6 +869,29 @@ Future enhancements under consideration:
 
 ---
 
+## 📚 Citation
+
+If you use LLM Buddy in your research, please cite:
+```bibtex
+@phdthesis{vigil2026adaptive,
+  title={Adaptive Multi-Agent Intelligence: A Dynamic Data Management System for Enhanced Data Quality and Reconciliation},
+  author={Vigil, Anthony Taeyang},
+  year={2026},
+  school={University of South Florida}
+}
+```
+
+For the tool itself:
+```bibtex
+@software{vigil2026llmbuddy,
+  author = {Vigil, Anthony Taeyang},
+  title = {LLM Buddy: A Computer-Aided Method Engineering Tool for LLM-Augmented Research},
+  year = {2025},
+  url = {https://github.com/avigi25/LLM-Buddy}
+}
+```
+
 **Version**: 1.0.0  
 **Last Updated**: January 2025  
+
 **Created by**: Anthony Vigil

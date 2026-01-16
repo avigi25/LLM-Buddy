@@ -1,3 +1,19 @@
+# ==========================================
+# CRITICAL: Protect Origin Research Data
+# ==========================================
+# Your actual research prompts - NEVER UPLOAD
+prompts.db
+claude_prompts.json
+*origin*
+*Origin*
+*ORIGIN*
+*.db
+!examples/*.db
+
+# Any files with "origin" in the name
+**/*origin*
+**/*Origin*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -205,3 +221,41 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ==========================================
+# LLM Buddy Specific Files
+# ==========================================
+# Database auxiliary files
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Backup files
+*.json.backup
+*.db.backup
+
+# MITM Proxy certificates (generated during first run)
+mitmproxy-ca*.pem
+mitmproxy-ca*.p12
+mitmproxy-ca*.cer
+mitmproxy-dhparam.pem
+.mitmproxy/
+
+# LLM Buddy config files that might contain sensitive data
+config.json
+local_config.py
+settings.json
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows  
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE_BIN/
+
+# Linux
+*~

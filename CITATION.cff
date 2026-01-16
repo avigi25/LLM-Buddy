@@ -1,0 +1,62 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: 'LLM Buddy: A Computer-Aided Method Engineering Tool for LLM-Augmented Research'
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Anthony Taeyang
+    family-names: Vigil
+    email: anthonyvigil@usf.edu
+    affiliation: University of South Florida, Muma College of Business
+    orcid: 'https://orcid.org/0009-0008-4438-9181'  # Replace with your actual ORCID if you have one
+repository-code: 'https://github.com/avigi25/LLM-Buddy'
+url: 'https://github.com/avigi25/LLM-Buddy'
+abstract: >-
+  LLM Buddy is a Computer-Aided Method Engineering (CAME) tool developed
+  to address methodological challenges in conducting rigorous research with
+  Large Language Models. The tool provides comprehensive prompt capture,
+  unified prompt history, file association tracking, and support for the
+  Conversational Forking methodology. It was developed as part of doctoral
+  research at the University of South Florida and used to document 1,555
+  prompts across 6 Elaborated Action Design Research (eADR) cycles, enabling
+  unprecedented documentation of AI-augmented development processes.
+keywords:
+  - prompt engineering
+  - large language models
+  - research methodology
+  - computer-aided method engineering
+  - action design research
+  - LLM documentation
+  - reproducibility
+  - conversational forking
+  - AI-augmented development
+  - prompt capture
+license: MIT
+version: 1.0.0
+date-released: '2026-01-16'
+references:
+  - type: thesis
+    authors:
+      - given-names: Anthony Taeyang
+        family-names: Vigil
+    title: >-
+      Adaptive Multi-Agent Intelligence: A Dynamic Data Management System
+      for Enhanced Data Quality and Reconciliation
+    year: 2026
+    institution:
+      name: University of South Florida
+    thesis-type: 'Doctoral dissertation'
+    department: Muma College of Business
+preferred-citation:
+  type: software
+  authors:
+    - given-names: Anthony Taeyang
+      family-names: Vigil
+  title: 'LLM Buddy: A Computer-Aided Method Engineering Tool for LLM-Augmented Research'
+  year: 2026
+  version: 1.0.0
+  url: 'https://github.com/avigi25/LLM-Buddy'

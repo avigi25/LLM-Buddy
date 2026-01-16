@@ -1,4 +1,7 @@
 ## 🎓 Research Context
+   
+   [![Python](https://img.shields.io/badge/python-3.8%2B-blue)]()
+   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **This tool was developed as part of doctoral research at the University of South Florida's Muma College of Business.**
 
@@ -895,4 +898,5 @@ For the tool itself:
 **Last Updated**: January 2025  
 
 **Created by**: Anthony Vigil
+
 

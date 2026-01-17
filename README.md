@@ -1,6 +1,6 @@
 ## 🎓 Research Context
 
-   [![DOI](https://zenodo.org/badge/1135937826.svg)](https://doi.org/10.5281/zenodo.18274813)
+   [![DOI](	https://zenodo.org/badge/DOI/10.5281/zenodo.18274958.svg)](https://doi.org/10.5281/zenodo.18274813)
    [![Python](https://img.shields.io/badge/python-3.8%2B-blue)]()
    [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -899,6 +899,7 @@ For the tool itself:
 **Last Updated**: January 2025  
 
 **Created by**: Anthony Vigil
+
 
 
 

@@ -1,0 +1,98 @@
+{
+  "manifest_version": 3,
+  "name": "LLM Buddy - Prompt Recorder",
+  "version": "1.0.0",
+  "description": "Automatically records prompts from ChatGPT, Claude, Gemini, Perplexity, Grok, DeepSeek, and more to LLM Buddy.",
+  "permissions": [
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://localhost:5000/*",
+    "*://chatgpt.com/*",
+    "*://chat.openai.com/*",
+    "*://claude.ai/*",
+    "*://gemini.google.com/*",
+    "*://perplexity.ai/*",
+    "*://www.perplexity.ai/*",
+    "*://grok.com/*",
+    "*://www.grok.com/*",
+    "*://chat.deepseek.com/*",
+    "*://chat.mistral.ai/*",
+    "*://huggingface.co/*",
+    "*://meta.ai/*",
+    "*://www.meta.ai/*",
+    "*://copilot.microsoft.com/*",
+    "*://you.com/*",
+    "*://www.you.com/*",
+    "*://phind.com/*",
+    "*://www.phind.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://chatgpt.com/*",
+        "*://chat.openai.com/*",
+        "*://claude.ai/*",
+        "*://gemini.google.com/*",
+        "*://perplexity.ai/*",
+        "*://www.perplexity.ai/*",
+        "*://grok.com/*",
+        "*://www.grok.com/*",
+        "*://chat.deepseek.com/*",
+        "*://chat.mistral.ai/*",
+        "*://huggingface.co/chat/*",
+        "*://meta.ai/*",
+        "*://www.meta.ai/*",
+        "*://copilot.microsoft.com/*",
+        "*://you.com/*",
+        "*://www.you.com/*",
+        "*://phind.com/*",
+        "*://www.phind.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["interceptor.js"],
+      "matches": [
+        "*://chatgpt.com/*",
+        "*://chat.openai.com/*",
+        "*://claude.ai/*",
+        "*://gemini.google.com/*",
+        "*://perplexity.ai/*",
+        "*://www.perplexity.ai/*",
+        "*://grok.com/*",
+        "*://www.grok.com/*",
+        "*://chat.deepseek.com/*",
+        "*://chat.mistral.ai/*",
+        "*://huggingface.co/*",
+        "*://meta.ai/*",
+        "*://www.meta.ai/*",
+        "*://copilot.microsoft.com/*",
+        "*://you.com/*",
+        "*://www.you.com/*",
+        "*://phind.com/*",
+        "*://www.phind.com/*"
+      ]
+    }
+  ]
+}

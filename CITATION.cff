@@ -1,0 +1,48 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "LLM Buddy: A Computer-Aided Method Engineering Tool for LLM-Augmented Research"
+type: software
+version: 3.0.0
+date-released: 2026-03-07
+license: MIT
+repository-code: "https://github.com/avigi25/LLM-Buddy"
+url: "https://github.com/avigi25/LLM-Buddy"
+abstract: >-
+  A Computer-Aided Method Engineering (CAME) tool for documenting
+  LLM-augmented research through prompt-centric auditable development.
+  LLM Buddy captures prompts and responses from all major LLM services
+  via a Chrome extension, HTTPS proxy, Claude Desktop MCP integration,
+  or manual entry, and stores them in a unified local database alongside
+  file associations, auto-backups, and research session metadata.
+keywords:
+  - design science research
+  - large language models
+  - prompt management
+  - research transparency
+  - promptware engineering
+  - eADR
+  - computer-aided method engineering
+authors:
+  - family-names: "Vigil"
+    given-names: "Anthony Taeyang"
+    email: "anthony.vigil@usf.edu"
+    orcid: "https://orcid.org/0009-0008-4438-9181"
+    affiliation: "University of South Florida"
+preferred-citation:
+  type: conference-paper
+  title: "LLM Buddy: An AI-Augmented Research Environment for Auditable Design Science"
+  authors:
+    - family-names: "Vigil"
+      given-names: "Anthony Taeyang"
+      orcid: "https://orcid.org/0009-0008-4438-9181"
+      affiliation: "University of South Florida"
+    - family-names: "Mullarkey"
+      given-names: "Matthew T."
+      orcid: "https://orcid.org/0000-0001-9991-9153"
+      affiliation: "University of South Florida"
+  collection-title: "Proceedings of the 21st International Conference on Design Science Research in Information Systems and Technology (DESRIST 2026)"
+  year: 2026
+  conference:
+    name: "DESRIST 2026"
+    city: "Münster"
+    country: "DE"

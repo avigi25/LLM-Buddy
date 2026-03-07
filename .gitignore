@@ -1,0 +1,52 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Editable install metadata
+*.egg-info/
+
+# Runtime data
+prompts.db
+prompts.json
+claude_prompts.json
+
+# Logs
+*.log
+
+# Generated launcher (recreated by installer)
+LLM Buddy.bat
+
+# Backups created by the app
+backup/
+
+# eADR notes (user data)
+eadr_notes.json
+
+# Profiles (user data)
+profiles.json
+
+# Auto-backup settings (user data)
+auto_backup_settings.json
+
+# Research sessions (user data)
+sessions.json
+
+# Claude Code project settings
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Original artifact (large, not needed for distribution)
+Artifacts/

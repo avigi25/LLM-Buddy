@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-buddy"
+version = "3.0.0"
+description = "Universal prompt recording and management system for LLM services"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Anthony Vigil", email = "anthony.vigil@usf.edu"},
+]
+keywords = ["llm", "prompt", "recording", "chatgpt", "claude", "gemini"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Documentation",
+]
+dependencies = [
+    "tiktoken>=0.5.0",
+    "watchdog>=3.0.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "PySide6>=6.6.0",
+]
+
+[project.optional-dependencies]
+proxy = ["mitmproxy>=9.0.1"]
+server = ["flask>=2.3.3", "flask-cors>=4.0.0"]
+mcp = ["mcp>=0.9.0"]
+all = [
+    "mitmproxy>=9.0.1",
+    "flask>=2.3.3",
+    "flask-cors>=4.0.0",
+    "mcp>=0.9.0",
+]
+
+[project.scripts]
+llm-buddy = "llm_buddy.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/avigil06/LLM-Buddy"
+
+[tool.setuptools.packages.find]
+where = ["src"]

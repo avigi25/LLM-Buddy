@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 300px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      color: #333;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      color: #1a1a1a;
+    }
+    .status {
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      font-weight: 500;
+    }
+    .connected { background: #e8f5e9; color: #2e7d32; }
+    .disconnected { background: #ffebee; color: #c62828; }
+    .stat { display: flex; justify-content: space-between; padding: 4px 0; }
+    .stat-label { color: #666; }
+    .stat-value { font-weight: 600; }
+    hr { border: none; border-top: 1px solid #eee; margin: 12px 0; }
+    .settings { margin-top: 8px; }
+    .settings label { display: block; margin-bottom: 4px; color: #666; font-size: 12px; }
+    .settings input {
+      width: 100%; padding: 6px 8px; border: 1px solid #ddd;
+      border-radius: 4px; font-size: 12px; box-sizing: border-box;
+    }
+    .btn {
+      width: 100%; padding: 8px; margin-top: 8px; border: none;
+      border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500;
+    }
+    .btn-primary { background: #1976d2; color: white; }
+    .btn-secondary { background: #f5f5f5; color: #333; border: 1px solid #ddd; }
+    .btn:hover { opacity: 0.9; }
+    .sites { font-size: 11px; color: #888; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h2>LLM Buddy</h2>
+
+  <div id="status" class="status disconnected">Checking connection...</div>
+
+  <div class="stat">
+    <span class="stat-label">Prompts captured</span>
+    <span class="stat-value" id="count">0</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">Server prompts</span>
+    <span class="stat-value" id="serverCount">-</span>
+  </div>
+
+  <hr>
+
+  <div class="settings">
+    <label>Server URL</label>
+    <input type="text" id="serverUrl" value="http://localhost:5000">
+    <button class="btn btn-primary" id="saveBtn">Save & Test Connection</button>
+    <button class="btn btn-secondary" id="resetBtn">Reset Count</button>
+  </div>
+
+  <div class="sites">
+    Monitoring: ChatGPT, Claude, Gemini, Perplexity, Grok, DeepSeek, Le Chat, HuggingChat, Meta AI, Copilot, You.com, Phind
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

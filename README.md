@@ -291,6 +291,11 @@ For the tool itself:
   version = {3.0.0}
 }
 ```
+## Disclaimer
+
+This software is provided **for educational and research purposes only**. LLM Buddy interacts with third-party services (including ChatGPT, Claude, Gemini, and others) by intercepting web traffic and DOM content. These techniques may conflict with the terms of service of individual LLM providers. Users are solely responsible for ensuring their use of this tool complies with all applicable terms of service, laws, and regulations.
+
+This software is provided "as is" without warranty of any kind, express or implied. The authors assume no responsibility or liability for any consequences arising from the use of this tool. Features that depend on third-party website structures or APIs may break at any time without notice due to changes made by those providers.
 
 ## License
 

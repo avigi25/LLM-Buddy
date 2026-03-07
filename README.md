@@ -19,7 +19,7 @@ A prototype paper, *"LLM Buddy: An AI-Augmented Research Environment for Auditab
 
 ## Demo
 
-<video src="demo/llm-buddy-demo.mp4" controls width="720"></video>
+<video src="demo/LLM_Buddy_Demo.mp4" controls width="720"></video>
 Link to download the video demonstration of LLM Buddy is available here: [Demo Video](demo/LLM_Buddy_Demo.mp4)
 
 <!-- If hosting externally, replace the link above with your YouTube/Vimeo URL -->

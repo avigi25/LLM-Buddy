@@ -38,12 +38,15 @@ def concurrent(fn):  # type: ignore[misc]
     return fn
 
 
-os.makedirs("logs", exist_ok=True)
+from llm_buddy.paths import get_logs_dir
+_LOG_DIR = get_logs_dir()
 logging.basicConfig(
+    force=True,   # mitmproxy configures the root logger before addons are loaded;
+                  # force=True removes its handlers first so ours actually attach.
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join("logs", "proxy_recorder.log")),
+        logging.FileHandler(os.path.join(_LOG_DIR, "proxy_recorder.log")),
         logging.StreamHandler(),
     ],
 )
@@ -89,10 +92,6 @@ class LLMPromptRecorder:
 
     def configure(self, updated):
         logger.info("Configuration updated")
-
-    # ------------------------------------------------------------------
-    # Request matching
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _match(url, patterns):
@@ -140,6 +139,12 @@ class LLMPromptRecorder:
             if not text:
                 return
 
+            # ChatGPT: extract conversation_id from response and update
+            # the prompt record if it was recorded with a fallback ID
+            # (e.g. the first message in a new conversation).
+            if llm_source == "ChatGPT":
+                self._update_conversation_id_from_response(prompt_id, text)
+
             # Dispatch to format-aware parser based on LLM source
             parser_name = _RESPONSE_PARSER.get(llm_source, "_parse_generic_response")
             parser = getattr(self, parser_name)
@@ -179,10 +184,6 @@ class LLMPromptRecorder:
 
         except Exception as e:
             logger.error("Error processing %s response: %s", llm_source, e)
-
-    # ------------------------------------------------------------------
-    # Format-specific response parsers
-    # ------------------------------------------------------------------
 
     @concurrent
     def websocket_message(self, flow: http.HTTPFlow) -> None:
@@ -289,16 +290,57 @@ class LLMPromptRecorder:
             except json.JSONDecodeError:
                 pass
 
+    def _update_conversation_id_from_response(self, prompt_id: str, text: str) -> None:
+        """Extract conversation_id from a ChatGPT SSE response and update the
+        prompt record if it was stored with a fallback conversation_id.
+
+        ChatGPT only returns the conversation_id in its *response*, not in the
+        request body for the very first message.  This method scans the
+        streaming response for a ``conversation_id`` field and patches the
+        prompt so it groups correctly with the rest of the conversation.
+        """
+        try:
+            # Find the prompt record to check its current conversation_id
+            prompt = self.db.get_prompt(prompt_id)
+            if not prompt:
+                return
+            current_cid = prompt.conversation_id or ""
+            # Only update if the current ID looks like a fallback (path-based,
+            # not a UUID).
+            has_uuid = re.search(r"[0-9a-f]{8,}-", current_cid)
+            if has_uuid:
+                return  # Already has a proper conversation_id
+
+            # Scan SSE lines for a conversation_id field
+            new_cid = None
+            for line in text.splitlines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    data = json.loads(data_str)
+                    cid = None
+                    if isinstance(data, dict):
+                        cid = data.get("conversation_id")
+                    if cid and isinstance(cid, str) and len(cid) >= 8:
+                        new_cid = cid
+                        break
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+            if new_cid and new_cid != current_cid:
+                self.db.update_conversation_id(prompt_id, new_cid)
+                logger.info(
+                    "Updated conversation_id for prompt %s: %s -> %s",
+                    prompt_id, current_cid, new_cid,
+                )
+        except Exception as e:
+            logger.debug("Could not update conversation_id from response: %s", e)
+
     def _parse_chatgpt_response(self, text: str, content_type: str) -> str:
         """Parse ChatGPT responses (API + Web UI, streaming + non-streaming)."""
-        # --- ADDED THIS TRACING BLOCK ---
-        #import time
-        #debug_filename = f"chatgpt_debug_{int(time.time())}.log"
-        #with open(debug_filename, "w", encoding="utf-8") as f:
-        #    f.write(text)
-        #    logger.info(f"Saved raw ChatGPT response stream to {debug_filename}")
-        # ------------------------------
-
         try:
             data = json.loads(text)
             # Standard OpenAI API format
@@ -404,7 +446,6 @@ class LLMPromptRecorder:
     def _parse_claude_response(self, text: str, content_type: str) -> str:
         """Parse Claude responses (API + Web UI, streaming + non-streaming)."""
 
-        # --- Non-streaming API response ---
         if "text/event-stream" not in content_type:
             try:
                 body = json.loads(text)
@@ -422,7 +463,6 @@ class LLMPromptRecorder:
             except Exception:
                 return ""
 
-        # --- SSE streaming ---
         chunks: list[str] = []
 
         for obj in self._iter_sse_data(text):
@@ -446,27 +486,17 @@ class LLMPromptRecorder:
     def _parse_gemini_response(self, text: str, content_type: str) -> str:
         """Parse Gemini responses (API JSON, API SSE, and Web UI RPC)."""
 
-        # --- ADDED THIS TRACING BLOCK ---
-        #import time
-        #debug_filename = f"gemini_debug_{int(time.time())}.log"
-        #with open(debug_filename, "w", encoding="utf-8") as f:
-        #    f.write(text)
-        #    logger.info(f"Saved raw Gemini response stream to {debug_filename}")
-        # ------------------------------
-
         # Gemini Web UI responses often start with )]}' even when Content-Type is application/json.
         if text.startswith(")]}'"):
             clean = text.split("\n", 1)[-1]
             return self._extract_gemini_rpc_text(clean)
 
-        # --- Gemini API: streaming SSE ---
         if "text/event-stream" in content_type:
             parts_text: list[str] = []
             for obj in self._iter_sse_data(text):
                 parts_text.extend(self._extract_gemini_api_parts(obj))
             return "".join(parts_text)
 
-        # --- Gemini API: non-streaming JSON ---
         if "application/json" in content_type:
             try:
                 body = json.loads(text)
@@ -479,7 +509,6 @@ class LLMPromptRecorder:
             # Fall back to RPC extractor if it wasn't clean JSON.
             return self._extract_gemini_rpc_text(text)
 
-        # --- Gemini Web UI: RPC format ---
         clean = text.split("\n", 1)[-1] if text.startswith(")]}'") else text
         return self._extract_gemini_rpc_text(clean)
 
@@ -652,7 +681,6 @@ class LLMPromptRecorder:
         reasoning_chunks: list[str] = []
         content_chunks: list[str] = []
 
-        # --- Non-streaming ---
         if "text/event-stream" not in content_type:
             try:
                 body = json.loads(text)
@@ -668,7 +696,6 @@ class LLMPromptRecorder:
             except Exception:
                 return ""
 
-        # --- SSE streaming ---
         for obj in self._iter_sse_data(text):
             try:
                 delta = obj["choices"][0]["delta"]
@@ -691,7 +718,6 @@ class LLMPromptRecorder:
     def _parse_generic_response(self, text: str, content_type: str) -> str:
         """Fallback parser for Perplexity, Mistral, Groq, etc."""
 
-        # --- SSE (OpenAI-compatible deltas) ---
         if "text/event-stream" in content_type:
             chunks: list[str] = []
             for obj in self._iter_sse_data(text):
@@ -704,7 +730,6 @@ class LLMPromptRecorder:
             if chunks:
                 return "".join(chunks)
 
-        # --- Non-streaming JSON ---
         try:
             body = json.loads(text)
             # OpenAI chat completions
@@ -726,10 +751,6 @@ class LLMPromptRecorder:
             pass
 
         return ""
-
-    # ------------------------------------------------------------------
-    # LLM-specific processors
-    # ------------------------------------------------------------------
 
     def _process_chatgpt(self, flow, origin, llm_name="ChatGPT"):
         try:
@@ -756,24 +777,30 @@ class LLMPromptRecorder:
                     ]
                     if user_msgs:
                         content = user_msgs[-1].get("content", {})
-                        parts = (
-                            content.get("parts", [])
-                            if isinstance(content, dict)
-                            and content.get("content_type") == "text"
-                            else []
-                        )
-                        if parts and isinstance(parts[0], str):
-                            self._record(
-                                prompt_text=parts[0],
-                                llm_name="ChatGPT",
-                                model_name=body.get("model", "ChatGPT"),
-                                origin=origin,
-                                url=flow.request.url,
-                                conversation_id=body.get("conversation_id"),
-                                metadata={"api_type": "chatgpt_web", "format": "new"},
-                                flow=flow,
-                            )
-                            return
+                        if isinstance(content, dict) and content.get("content_type") in ("text", "multimodal_text"):
+                            parts = content.get("parts", [])
+                            text_parts = [p for p in parts if isinstance(p, str)]
+                            attachments = self._extract_attachments_from_chatgpt_parts(parts)
+                            prompt_text = " ".join(text_parts) if text_parts else ""
+                            if prompt_text or attachments:
+                                meta = {
+                                    "api_type": "chatgpt_web",
+                                    "format": "new",
+                                    "parent_message_id": body.get("parent_message_id"),
+                                    "messages_count": len(messages),
+                                }
+                                self._record(
+                                    prompt_text=prompt_text,
+                                    llm_name="ChatGPT",
+                                    model_name=body.get("model", "ChatGPT"),
+                                    origin=origin,
+                                    url=flow.request.url,
+                                    conversation_id=body.get("conversation_id"),
+                                    metadata=meta,
+                                    flow=flow,
+                                    attachments=attachments or None,
+                                )
+                                return
                 except Exception as e:
                     logger.error("Error processing ChatGPT Web format: %s", e)
 
@@ -782,7 +809,9 @@ class LLMPromptRecorder:
                 user_msgs = [m for m in body["messages"] if m.get("role") == "user"]
                 if user_msgs:
                     prompt_text: Any = user_msgs[-1].get("content", "")
+                    attachments = None
                     if isinstance(prompt_text, list):
+                        attachments = self._extract_attachments_from_content(prompt_text) or None
                         prompt_text = " ".join(
                             item.get("text", "")
                             for item in prompt_text
@@ -802,6 +831,7 @@ class LLMPromptRecorder:
                             "messages_count": len(body["messages"]),
                         },
                         flow=flow,
+                        attachments=attachments,
                     )
 
             elif "prompt" in body:
@@ -836,9 +866,11 @@ class LLMPromptRecorder:
                 )
             elif "content" in body or "messages" in body:
                 messages = body.get("messages", [])
+                attachments = None
                 if not messages and "content" in body:
                     prompt_text: Any = body["content"]
                     if isinstance(prompt_text, list):
+                        attachments = self._extract_attachments_from_content(prompt_text) or None
                         prompt_text = " ".join(
                             item.get("text", "")
                             for item in prompt_text
@@ -850,6 +882,7 @@ class LLMPromptRecorder:
                         return
                     prompt_text = user_msgs[-1].get("content", "")
                     if isinstance(prompt_text, list):
+                        attachments = self._extract_attachments_from_content(prompt_text) or None
                         prompt_text = " ".join(
                             item.get("text", "")
                             for item in prompt_text
@@ -863,8 +896,13 @@ class LLMPromptRecorder:
                     origin=origin,
                     url=flow.request.url,
                     conversation_id=body.get("conversation_id"),
-                    metadata={"api_type": "messages", "messages_count": len(messages) or 1},
+                    metadata={
+                        "api_type": "messages",
+                        "messages_count": len(messages) or 1,
+                        "parent_message_id": body.get("parent_message_uuid") or body.get("parent_message_id"),
+                    },
                     flow=flow,
+                    attachments=attachments,
                 )
         except Exception as e:
             logger.error("Error processing Claude request: %s", e)
@@ -880,19 +918,24 @@ class LLMPromptRecorder:
             if "contents" not in body:
                 return
             prompt_text = ""
+            attachments = []
             for content in body["contents"]:
-                for part in content.get("parts", []):
+                parts = content.get("parts", [])
+                for part in parts:
                     if "text" in part:
                         prompt_text += part["text"] + " "
+                attachments.extend(self._extract_attachments_from_gemini_parts(parts))
             prompt_text = prompt_text.strip()
-            if prompt_text:
+            if prompt_text or attachments:
                 self._record(
                     prompt_text=prompt_text,
                     llm_name="Gemini",
                     model_name=body.get("model", "gemini-unknown"),
                     origin=origin,
                     url=flow.request.url,
+                    metadata={"messages_count": len(body.get("contents", []))},
                     flow=flow,
+                    attachments=attachments or None,
                 )
         except Exception as e:
             logger.error("Error processing Gemini request: %s", e)
@@ -1084,12 +1127,14 @@ class LLMPromptRecorder:
                     prompt_text = user_msgs[-1].get("content", "")
 
             if prompt_text:
+                mc = len(body.get("messages", body.get("message", [])))
                 self._record(
                     prompt_text=prompt_text,
                     llm_name="Perplexity",
                     model_name=body.get("model", "perplexity-unknown"),
                     origin=origin,
                     url=flow.request.url,
+                    metadata={"messages_count": mc} if mc else None,
                     flow=flow,
                 )
         except Exception as e:
@@ -1103,9 +1148,10 @@ class LLMPromptRecorder:
                 return
             body = json.loads(text)
             prompt_text = self._extract_openai_messages(body)
+            attachments = self._extract_openai_attachments(body) or None
             if not prompt_text:
                 prompt_text = body.get("prompt", "")
-            if prompt_text:
+            if prompt_text or attachments:
                 self._record(
                     prompt_text=prompt_text,
                     llm_name=llm_name,
@@ -1117,8 +1163,10 @@ class LLMPromptRecorder:
                         "api_type": "openai_compat",
                         "temperature": body.get("temperature"),
                         "max_tokens": body.get("max_tokens"),
+                        "messages_count": len(body.get("messages", [])),
                     },
                     flow=flow,
+                    attachments=attachments,
                 )
         except Exception as e:
             logger.error("Error processing %s request: %s", llm_name, e)
@@ -1140,6 +1188,147 @@ class LLMPromptRecorder:
                 if isinstance(item, dict) and item.get("type") == "text"
             )
         return str(content) if content else ""
+
+    @staticmethod
+    def _extract_attachments_from_content(content):
+        """Extract attachment metadata from an OpenAI/Claude-style content array."""
+        if not isinstance(content, list):
+            return []
+        attachments = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type", "")
+            if item_type == "image_url":
+                url = item.get("image_url", {}).get("url", "")
+                source = "base64" if url.startswith("data:") else "url"
+                media_type = None
+                if url.startswith("data:"):
+                    media_type = url.split(";")[0].replace("data:", "")
+                attachments.append({"type": "image", "media_type": media_type, "source": source})
+            elif item_type == "image":
+                src = item.get("source", {})
+                attachments.append({
+                    "type": "image",
+                    "media_type": src.get("media_type"),
+                    "source": src.get("type", "unknown"),
+                })
+            elif item_type == "document":
+                src = item.get("source", {})
+                attachments.append({
+                    "type": "document",
+                    "media_type": src.get("media_type"),
+                    "source": src.get("type", "unknown"),
+                    "name": item.get("name"),
+                })
+        return attachments
+
+    @staticmethod
+    def _extract_attachments_from_chatgpt_parts(parts):
+        """Extract attachment metadata from ChatGPT Web UI multimodal parts."""
+        attachments = []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            ct = part.get("content_type", "")
+            if ct == "image_asset_pointer":
+                attachments.append({
+                    "type": "image",
+                    "media_type": None,
+                    "source": "chatgpt_asset",
+                    "asset_id": part.get("asset_pointer", ""),
+                })
+            elif "file" in ct or "document" in ct:
+                attachments.append({
+                    "type": "document",
+                    "media_type": None,
+                    "source": "chatgpt_asset",
+                    "name": part.get("name") or part.get("asset_pointer", ""),
+                })
+        return attachments
+
+    @staticmethod
+    def _extract_attachments_from_gemini_parts(parts):
+        """Extract attachment metadata from Gemini API parts."""
+        attachments = []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if "inline_data" in part:
+                data = part["inline_data"]
+                mime = data.get("mime_type", "")
+                attachments.append({
+                    "type": "image" if mime.startswith("image/") else "document",
+                    "media_type": mime or None,
+                    "source": "inline_base64",
+                })
+            elif "file_data" in part:
+                data = part["file_data"]
+                attachments.append({
+                    "type": "document",
+                    "media_type": data.get("mime_type"),
+                    "source": "file_uri",
+                    "uri": data.get("file_uri", ""),
+                })
+        return attachments
+
+    @staticmethod
+    def _extract_openai_attachments(body):
+        """Extract attachment metadata from the last user message in an OpenAI-style body."""
+        messages = body.get("messages", [])
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        if not user_msgs:
+            return []
+        content = user_msgs[-1].get("content", "")
+        if isinstance(content, list):
+            return PromptRecorderAddon._extract_attachments_from_content(content)
+        return []
+
+    @staticmethod
+    def _extract_conversation_id_from_flow(flow):
+        """Extract a stable conversation ID from the Referer header URL.
+
+        Most LLM web UIs include the conversation page URL as the Referer
+        header on API requests.  This gives us a stable grouping key even
+        when the request body does not contain a conversation_id field.
+        """
+        if flow is None:
+            return None
+        referer = flow.request.headers.get("referer") or flow.request.headers.get("Referer")
+        if not referer:
+            return None
+        try:
+            parsed = urlparse(referer)
+            path = parsed.path or ""
+            # ChatGPT: /c/{uuid}
+            m = re.search(r"/c/([0-9a-f-]{8,})", path, re.IGNORECASE)
+            if m:
+                return m.group(1)
+            # Claude: /chat/{uuid}
+            m = re.search(r"/chat/([0-9a-f-]{8,})", path, re.IGNORECASE)
+            if m:
+                return m.group(1)
+            # Gemini: /app/{id}
+            m = re.search(r"/app/([0-9a-f]{8,})", path, re.IGNORECASE)
+            if m:
+                return m.group(1)
+            # Gemini fallback: normalize bare /app or / to a consistent key
+            if "gemini.google" in (parsed.netloc or ""):
+                return "gemini.google.com/app"
+            # Perplexity: /search/{slug}
+            m = re.search(r"/search/([A-Za-z0-9_.-]{8,})", path)
+            if m:
+                return m.group(1)
+            # Generic: last path segment if it looks like an ID
+            segments = [s for s in path.split("/") if s]
+            if segments:
+                last = segments[-1]
+                if len(last) >= 8 and re.fullmatch(r"[A-Za-z0-9_-]+", last):
+                    return last
+            # Fallback: use full referer origin+path as a stable grouping key
+            return parsed.netloc + path
+        except Exception:
+            return None
 
     def _process_generic(self, flow, origin, llm_name=None):
         try:
@@ -1177,10 +1366,6 @@ class LLMPromptRecorder:
         except Exception as e:
             logger.error("Error processing generic LLM request: %s", e)
 
-    # ------------------------------------------------------------------
-    # Recording helper
-    # ------------------------------------------------------------------
-
     def _record(
         self,
         prompt_text,
@@ -1191,7 +1376,12 @@ class LLMPromptRecorder:
         conversation_id=None,
         metadata=None,
         flow=None,
+        attachments=None,
     ):
+        if attachments:
+            if metadata is None:
+                metadata = {}
+            metadata["attachments"] = attachments
         prompt_id = self.db.add_prompt(
             prompt_text=prompt_text,
             llm_name=llm_name,
@@ -1199,7 +1389,7 @@ class LLMPromptRecorder:
             model_name=model_name,
             description=f"{llm_name} prompt via {origin}",
             url=url,
-            conversation_id=conversation_id or f"{llm_name.lower()}-{datetime.now().timestamp()}",
+            conversation_id=conversation_id or self._extract_conversation_id_from_flow(flow) or f"{llm_name.lower()}-{(model_name or 'unknown').lower()}-api",
             metadata=metadata,
             associated_files=self.active_files,
         )
@@ -1209,10 +1399,6 @@ class LLMPromptRecorder:
         if flow is not None:
             self._pending_responses[flow.id] = (prompt_id, llm_name)
 
-    # ------------------------------------------------------------------
-    # Active files management
-    # ------------------------------------------------------------------
-
     def set_active_files(self, files):
         self.active_files = files
         logger.info("Set %d active files for auto-association", len(files))
@@ -1221,10 +1407,6 @@ class LLMPromptRecorder:
         self.active_files = []
         logger.info("Cleared active files")
 
-
-# ------------------------------------------------------------------
-# URL pattern constants
-# ------------------------------------------------------------------
 
 _CHATGPT_PATTERNS = [
     # OpenAI API
@@ -1376,10 +1558,6 @@ _RESPONSE_PARSER = {
     "HuggingChat": "_parse_chatgpt_response",
     "Perplexity": "_parse_chatgpt_response",
 }
-
-# ------------------------------------------------------------------
-# mitmproxy addon API
-# ------------------------------------------------------------------
 
 recorder = LLMPromptRecorder()
 addons = [recorder]

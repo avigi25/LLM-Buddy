@@ -9,29 +9,16 @@ On session close the tool auto-generates a structured summary that
 serves as an exportable "methods appendix" for each iteration cycle.
 """
 
-import json
 import logging
-import os
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from llm_buddy.core.eadr import load_eadr_notes
-
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.path.join(os.getcwd(), "data")
-os.makedirs(DATA_DIR, exist_ok=True)
 
-# Update the default:
-DEFAULT_SESSIONS_PATH = os.path.join(DATA_DIR, "sessions.json")
-
-
-# =====================================================================
-# Data model
-# =====================================================================
 
 @dataclass
 class ResearchSession:
@@ -65,7 +52,6 @@ class ResearchSession:
         if self.start_time is None:
             self.start_time = datetime.now()
 
-    # -- pause / resume ------------------------------------------------
 
     def pause(self) -> None:
         """Pause a running session, freezing the elapsed clock."""
@@ -108,7 +94,6 @@ class ResearchSession:
         return self.paused_elapsed + (
             datetime.now() - self.start_time).total_seconds()
 
-    # -- serialisation -------------------------------------------------
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to JSON-serialisable dictionary."""
@@ -173,70 +158,28 @@ class ResearchSession:
         return self.status == "active"
 
 
-# =====================================================================
-# Persistence
-# =====================================================================
 
-def load_sessions(path: Optional[str] = None) -> List[ResearchSession]:
-    """Load all sessions from JSON file."""
-    fpath = path or DEFAULT_SESSIONS_PATH
-    if not os.path.exists(fpath):
-        return []
-    try:
-        with open(fpath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return [ResearchSession.from_dict(d) for d in data]
-    except Exception as e:
-        logger.error("Error loading sessions: %s", e)
-        return []
-
-
-def save_sessions(sessions: List[ResearchSession],
-                  path: Optional[str] = None) -> bool:
-    """Save all sessions to JSON file."""
-    fpath = path or DEFAULT_SESSIONS_PATH
-    try:
-        data = [s.to_dict() for s in sessions]
-        with open(fpath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
-        return True
-    except Exception as e:
-        logger.error("Error saving sessions: %s", e)
-        return False
-
-
-def get_active_session(
-        sessions: List[ResearchSession]) -> Optional[ResearchSession]:
-    """Return the currently active or paused session, if any."""
-    for s in sessions:
-        if s.status in ("active", "paused"):
-            return s
-    return None
-
-
-# =====================================================================
-# Snapshot & diff
-# =====================================================================
-
-def capture_snapshot(prompt_db, eadr_path=None,
+def capture_snapshot(prompt_db, db=None,
                      backup_config=None) -> Dict[str, Any]:
     """Capture the current state for later comparison.
 
     Parameters
     ----------
     prompt_db : PromptDatabase instance
-    eadr_path : path to eadr_notes.json (or None for default)
+    db : PromptDatabase instance (for eADR note count; same object as
+         prompt_db when called from the GUI)
     backup_config : AutoBackupConfig instance (or None)
     """
     prompt_ids = [p.id for p in prompt_db.prompts]
 
     notes = []
     try:
-        notes = load_eadr_notes(eadr_path)
+        if db is not None:
+            notes = db.get_eadr_notes()
     except Exception:
         pass
 
-    note_timestamps = [n.get("timestamp", "") for n in notes]
+    note_timestamps = [n.timestamp for n in notes]
 
     file_hashes: Dict[str, Any] = {}
     if backup_config and hasattr(backup_config, "file_hashes"):
@@ -275,7 +218,6 @@ def compute_session_diff(start_snapshot: Dict[str, Any],
             total_response_tokens += len(
                 getattr(p, "response_text", "") or "")
 
-    # File changes
     start_hashes = start_snapshot.get("file_hashes", {})
     end_hashes = end_snapshot.get("file_hashes", {})
     files_changed = []
@@ -303,9 +245,6 @@ def compute_session_diff(start_snapshot: Dict[str, Any],
     }
 
 
-# =====================================================================
-# Markdown summary
-# =====================================================================
 
 def generate_session_summary_markdown(
         session: ResearchSession,
@@ -326,7 +265,6 @@ def generate_session_summary_markdown(
     lines.append(f"**Status:** {session.status.capitalize()}")
     lines.append("")
 
-    # Summary
     lines.append("## Summary")
     lines.append("")
     lines.append(
@@ -346,7 +284,6 @@ def generate_session_summary_markdown(
         f"{diff.get('total_response_tokens', 0):,}")
     lines.append("")
 
-    # LLM breakdown table
     if llms:
         lines.append("## LLM Usage Breakdown")
         lines.append("")
@@ -357,7 +294,6 @@ def generate_session_summary_markdown(
             lines.append(f"| {llm} | {count} |")
         lines.append("")
 
-    # Files changed
     changed = diff.get("files_changed", [])
     if changed:
         lines.append("## Files Changed")
@@ -366,7 +302,6 @@ def generate_session_summary_markdown(
             lines.append(f"- `{fp}`")
         lines.append("")
 
-    # Session notes
     if session.notes:
         lines.append("## Session Notes")
         lines.append("")
@@ -376,9 +311,6 @@ def generate_session_summary_markdown(
     return "\n".join(lines)
 
 
-# =====================================================================
-# Helpers
-# =====================================================================
 
 def _parse_dt(s: str) -> Optional[datetime]:
     """Parse an ISO timestamp string into a datetime."""

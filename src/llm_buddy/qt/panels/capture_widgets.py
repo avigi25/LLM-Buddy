@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
     QTabWidget, QTextBrowser, QPlainTextEdit,
 )
 
+from llm_buddy.qt.theme import get_theme_colors, current_theme_name
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -31,8 +33,6 @@ try:
 except ImportError:
     requests = None
 
-
-# ── Extension Server Widget ──────────────────────────────────────────
 
 class ExtensionServerWidget(QWidget):
     """Compact one-row widget for starting / stopping the Flask API server."""
@@ -47,7 +47,8 @@ class ExtensionServerWidget(QWidget):
         layout.addWidget(QLabel("<b>Browser Extension:</b>"))
 
         self._status = QLabel("Inactive")
-        self._status.setStyleSheet("color: red;")
+        self._status.setStyleSheet(
+            f"color: {get_theme_colors(current_theme_name())['error']};")
         layout.addWidget(self._status)
         layout.addSpacing(10)
 
@@ -104,18 +105,34 @@ class ExtensionServerWidget(QWidget):
 
         # Reset stopping flag on start
         self._stopping = False
-        self._process = QProcess(self)
-        self._process.setProgram(sys.executable)
-        self._process.setArguments(
-            ["-m", "llm_buddy.recorders.api_server"])
-        self._process.readyReadStandardError.connect(self._on_stderr)
-        self._process.readyReadStandardOutput.connect(self._on_stdout)
-        self._process.finished.connect(self._on_finished)
-        self._process.errorOccurred.connect(self._on_error)
-        self._process.start()
 
-        QTimer.singleShot(2000, self._verify_started)
-        self._mw.log("Starting extension server on port 5000...")
+        if getattr(sys, "frozen", False):
+            # Frozen mode: run Flask in a daemon thread (QProcess
+            # with sys.executable -m ... doesn't work in .exe)
+            from llm_buddy.recorders.api_server import app as flask_app
+            self._server_thread = threading.Thread(
+                target=lambda: flask_app.run(
+                    host="127.0.0.1", port=5000, debug=False,
+                    use_reloader=False),
+                daemon=True,
+            )
+            self._server_thread.start()
+            # Use a sentinel so _stop / _on_finished still work
+            self._process = "thread"
+            QTimer.singleShot(2000, self._verify_started)
+            self._mw.log("Starting extension server on port 5000 (in-process)...")
+        else:
+            self._process = QProcess(self)
+            self._process.setProgram(sys.executable)
+            self._process.setArguments(
+                ["-m", "llm_buddy.recorders.api_server"])
+            self._process.readyReadStandardError.connect(self._on_stderr)
+            self._process.readyReadStandardOutput.connect(self._on_stdout)
+            self._process.finished.connect(self._on_finished)
+            self._process.errorOccurred.connect(self._on_error)
+            self._process.start()
+            QTimer.singleShot(2000, self._verify_started)
+            self._mw.log("Starting extension server on port 5000...")
 
     def _verify_started(self):
         if self._process and self._process.state() == QProcess.Running:
@@ -185,7 +202,8 @@ class ExtensionServerWidget(QWidget):
 
     def _set_running(self):
         self._status.setText("Running")
-        self._status.setStyleSheet("color: green;")
+        self._status.setStyleSheet(
+            f"color: {get_theme_colors(current_theme_name())['success']};")
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
         self._trigger_auto_refresh()
@@ -198,7 +216,8 @@ class ExtensionServerWidget(QWidget):
 
     def _set_stopped(self):
         self._status.setText("Inactive")
-        self._status.setStyleSheet("color: red;")
+        self._status.setStyleSheet(
+            f"color: {get_theme_colors(current_theme_name())['error']};")
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
         self._process = None
@@ -215,9 +234,8 @@ class ExtensionServerWidget(QWidget):
 
     @Slot()
     def _show_setup(self) -> None:
-        ext_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.dirname(__file__)))), "extension")
+        from llm_buddy.paths import get_extension_dir
+        ext_dir = get_extension_dir()
         
         # 1. Parent directly to MainWindow to prevent inherited paint glitches
         dlg = QDialog(self._mw)
@@ -273,8 +291,6 @@ To install the LLM Buddy extension:
             self._process.waitForFinished(3000)
 
 
-# ── Proxy Recorder Widget ────────────────────────────────────────────
-
 class ProxyRecorderWidget(QWidget):
     """Compact one-row widget for starting / stopping the proxy recorder."""
 
@@ -290,7 +306,8 @@ class ProxyRecorderWidget(QWidget):
         layout.addWidget(QLabel("<b>Proxy Recorder:</b>"))
 
         self._status = QLabel("Inactive")
-        self._status.setStyleSheet("color: red;")
+        self._status.setStyleSheet(
+            f"color: {get_theme_colors(current_theme_name())['error']};")
         layout.addWidget(self._status)
         layout.addSpacing(10)
 
@@ -381,28 +398,45 @@ class ProxyRecorderWidget(QWidget):
             return
 
         try:
-            addon_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                "recorders", "proxy_recorder.py")
+            if getattr(sys, "frozen", False):
+                # Frozen mode: use the bundled llm-buddy-proxy.exe
+                proxy_exe = os.path.join(
+                    os.path.dirname(sys.executable),
+                    "llm-buddy-proxy.exe")
+                if not os.path.exists(proxy_exe):
+                    QMessageBox.critical(
+                        self, "Proxy Not Found",
+                        f"Could not find {proxy_exe}")
+                    return
+                self._mw.log(f"Using bundled proxy: {proxy_exe}")
+                self._mw.log("Launching proxy on port 8080...")
+                self._process = QProcess(self)
+                self._process.setProgram(proxy_exe)
+                self._process.setArguments(["--port", "8080"])
+            else:
+                addon_path = os.path.join(
+                    os.path.dirname(os.path.dirname(
+                        os.path.dirname(__file__))),
+                    "recorders", "proxy_recorder.py")
 
-            mitmdump = self._find_mitmdump()
-            if not mitmdump:
-                QMessageBox.critical(
-                    self, "mitmdump not found",
-                    "Could not locate mitmdump.\n"
-                    "Install mitmproxy or ensure it's on PATH.")
-                return
+                mitmdump = self._find_mitmdump()
+                if not mitmdump:
+                    QMessageBox.critical(
+                        self, "mitmdump not found",
+                        "Could not locate mitmdump.\n"
+                        "Install mitmproxy or ensure it's on PATH.")
+                    return
 
-            self._mw.log(f"Using mitmdump at: {mitmdump}")
-            self._mw.log("Launching mitmdump on port 8080…")
+                self._mw.log(f"Using mitmdump at: {mitmdump}")
+                self._mw.log("Launching mitmdump on port 8080…")
 
-            self._process = QProcess(self)
-            self._process.setProgram(mitmdump)
-            self._process.setArguments([
-                "-p", "8080",
-                "-s", addon_path,
-                "--set", "block_global=false",
-            ])
+                self._process = QProcess(self)
+                self._process.setProgram(mitmdump)
+                self._process.setArguments([
+                    "-p", "8080",
+                    "-s", addon_path,
+                    "--set", "block_global=false",
+                ])
             self._process.readyReadStandardError.connect(self._on_stderr)
             self._process.readyReadStandardOutput.connect(self._on_stdout)
             self._process.finished.connect(self._on_finished)
@@ -412,7 +446,8 @@ class ProxyRecorderWidget(QWidget):
 
             # Poll readiness and then optionally enable system proxy
             self._status.setText("Starting…")
-            self._status.setStyleSheet("color: orange;")
+            self._status.setStyleSheet(
+                f"color: {get_theme_colors(current_theme_name())['warning']};")
             self._btn_start.setEnabled(False)
             self._btn_stop.setEnabled(True)
 
@@ -436,7 +471,8 @@ class ProxyRecorderWidget(QWidget):
             return
         if self._is_port_in_use(8080):
             self._status.setText("Running")
-            self._status.setStyleSheet("color: green;")
+            self._status.setStyleSheet(
+                f"color: {get_theme_colors(current_theme_name())['success']};")
             self._mw.log("Proxy recorder ready on port 8080")
             self._trigger_auto_refresh()
             # Offer system proxy on Windows
@@ -543,7 +579,8 @@ class ProxyRecorderWidget(QWidget):
 
     def _set_stopped(self):
         self._status.setText("Inactive")
-        self._status.setStyleSheet("color: red;")
+        self._status.setStyleSheet(
+            f"color: {get_theme_colors(current_theme_name())['error']};")
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
         self._process = None
@@ -572,21 +609,12 @@ class ProxyRecorderWidget(QWidget):
             winreg.CloseKey(key)
             self._proxy_was_configured = True
             self._mw.log("System proxy enabled: 127.0.0.1:8080")
-            
-            # Use the active window as parent to match the theme and prevent rendering glitches
-            from PySide6.QtWidgets import QApplication
-            parent_widget = QApplication.activeWindow() or self
-            
-            QMessageBox.information(
-                parent_widget,
-                "Proxy Enabled",
-                "The system proxy has been successfully enabled."
-            )
+            self._mw.show_toast("System proxy enabled (127.0.0.1:8080).", "success")
             
         except Exception as e:
             self._mw.log(f"Failed to set system proxy: {e}")
 
-    def _disable_system_proxy(self):
+    def _disable_system_proxy(self, silent: bool = False):
         try:
             import winreg
             key = winreg.OpenKey(
@@ -594,24 +622,18 @@ class ProxyRecorderWidget(QWidget):
                 r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
                 0, winreg.KEY_SET_VALUE)
             winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-            try:
-                winreg.DeleteValue(key, "ProxyOverride")
-            except FileNotFoundError:
-                pass
+            for entry in ("ProxyServer", "ProxyOverride"):
+                try:
+                    winreg.DeleteValue(key, entry)
+                except FileNotFoundError:
+                    pass
             winreg.CloseKey(key)
             self._proxy_was_configured = False
             self._mw.log("System proxy disabled")
-            
-            # Use the active window as parent to match the theme and prevent rendering glitches
-            from PySide6.QtWidgets import QApplication
-            parent_widget = QApplication.activeWindow() or self
-            
-            QMessageBox.information(
-                parent_widget, 
-                "Proxy Disabled", 
-                "The system proxy has been successfully disabled."
-            )
-            
+
+            if not silent:
+                self._mw.show_toast("System proxy disabled.", "info")
+
         except Exception as e:
             self._mw.log(f"Failed to disable proxy: {e}")
 
@@ -620,23 +642,10 @@ class ProxyRecorderWidget(QWidget):
         if os.name != "nt" or not self._proxy_was_configured:
             return
         try:
-            import winreg
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion"
-                r"\Internet Settings",
-                0, winreg.KEY_SET_VALUE | winreg.KEY_READ)
-            val, _ = winreg.QueryValueEx(key, "ProxyEnable")
-            if val == 1:
-                winreg.SetValueEx(key, "ProxyEnable", 0,
-                                  winreg.REG_DWORD, 0)
-            winreg.CloseKey(key)
+            # silent=True suppresses the QMessageBox during app shutdown.
+            self._disable_system_proxy(silent=True)
         except Exception:
             pass
-
-    # -- Setup guide ---------------------------------------------------
-
-    # ── Setup guide ───────────────────────────────────────────────────
 
     @Slot()
     def _show_guide(self) -> None:
@@ -729,12 +738,15 @@ class ProxyRecorderWidget(QWidget):
         
         # Replace <span> HTML with Qt style sheets for theme stability
         status_lbl = QLabel()
+        colors = get_theme_colors(current_theme_name())
         if cert_path.exists():
             status_lbl.setText("Certificate found!")
-            status_lbl.setStyleSheet("color: #2e7d32; font-weight: bold;") # Green
+            status_lbl.setStyleSheet(
+                f"color: {colors['success']}; font-weight: bold;")
         else:
             status_lbl.setText("Certificate not found yet. Start the proxy once.")
-            status_lbl.setStyleSheet("color: #ef6c00; font-weight: bold;") # Orange
+            status_lbl.setStyleSheet(
+                f"color: {colors['warning']}; font-weight: bold;")
         lay.addWidget(status_lbl)
 
         loc_lbl = QLabel(f"Location: {cert_path}")
@@ -800,7 +812,6 @@ class ProxyRecorderWidget(QWidget):
         base = (os.path.dirname(os.path.abspath(sys.argv[0]))
                 if sys.argv[0] else os.getcwd())
         db_path = os.path.join(base, "llm-proxy-recorder", "prompts.db")
-        json_path = os.path.join(base, "prompts.json")
 
         if not os.path.exists(db_path):
             db_path = os.path.join(os.getcwd(), "prompts.db")
@@ -818,42 +829,38 @@ class ProxyRecorderWidget(QWidget):
             cur.execute("SELECT * FROM prompts ORDER BY timestamp DESC")
             rows = cur.fetchall()
 
-            existing = []
-            if os.path.exists(json_path):
-                with open(json_path, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-            ids = {p.get("id") for p in existing}
-
+            existing_ids = {p.id for p in self._mw.prompt_database.prompts}
             added = 0
             for row in rows:
-                if row["id"] not in ids:
+                if row["id"] not in existing_ids:
                     cur.execute(
                         "SELECT file_path FROM file_associations "
                         "WHERE prompt_id = ?", (row["id"],))
                     files = [r["file_path"] for r in cur.fetchall()]
-                    existing.append({
+                    from llm_buddy.core.database import PromptRecord
+                    rec = PromptRecord.from_dict({
                         "id": row["id"],
                         "timestamp": row["timestamp"],
                         "prompt_text": row["prompt_text"],
                         "response_text": row["response_text"] or "",
                         "description": (row["description"]
                                         or f"Prompt from {row['llm_name']}"),
-                        "model": row["llm_name"],
-                        "files": files,
+                        "llm_used": row["llm_name"],
+                        "associated_files": files,
+                        "source": "Proxy Import",
                     })
+                    self._mw.prompt_database.add_prompt(prompt_record=rec)
+                    existing_ids.add(rec.id)
                     added += 1
 
+            conn.close()
             if added:
-                with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump(existing, f, indent=4)
                 self._mw.log(f"Imported {added} prompts from SQLite")
-                self._mw.prompt_database.load()
                 QMessageBox.information(
                     self, "Import", f"Imported {added} prompts.")
             else:
                 QMessageBox.information(
                     self, "Import", "No new prompts to import.")
-            conn.close()
         except Exception as e:
             self._mw.log(f"Error importing: {e}")
             QMessageBox.critical(self, "Error", str(e))

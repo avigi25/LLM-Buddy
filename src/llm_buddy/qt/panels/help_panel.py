@@ -50,7 +50,7 @@ class HelpPanel(QWidget):
 
 <h3>Feature Tabs</h3>
 <ul>
-<li><b>eADR Notes</b> &ndash; Add progress notes about your project.
+<li><b>Research Notes</b> &ndash; Add progress notes about your project.
     Notes are also created automatically when you combine scripts.</li>
 <li><b>Rollback</b> &ndash; Restore files from a previous backup. Select
     a backup file, review the diff, and restore.</li>

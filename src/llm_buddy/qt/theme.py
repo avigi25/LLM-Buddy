@@ -13,7 +13,6 @@ from PySide6.QtCore import Qt, Property, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QPalette, QFont
 from PySide6.QtWidgets import QApplication, QLabel, QFrame, QVBoxLayout
 
-# ── Chart colour palette (Tableau 10) ────────────────────────────────
 CHART_PALETTE = [
     "#4e79a7", "#f28e2b", "#e15759", "#76b7b2",
     "#59a14f", "#edc948", "#b07aa1", "#ff9da7",
@@ -34,8 +33,6 @@ STATUS_RED = "#c62828"
 STATUS_ORANGE = "#ef6c00"
 STATUS_GRAY = "#757575"
 
-
-# ── Shared base fragments ────────────────────────────────────────────
 
 _SHARED_WIDGET_RADIUS = "4px"
 
@@ -1090,12 +1087,17 @@ def _build_blue_palette() -> QPalette:
     p.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#aaaaaa"))
     return p
 
+_active_theme: str = "Light"
+
+
 def apply_theme(app: QApplication, name: str) -> None:
     """Apply a named theme to the application.
 
     Sets the QSS stylesheet and explicitly overwrites the QPalette
     for every theme so that native dialogs don't cache stale colors.
     """
+    global _active_theme
+    _active_theme = name
     qss = THEMES.get(name, LIGHT_QSS)
     app.setStyleSheet(qss)
 
@@ -1143,16 +1145,8 @@ def get_theme_colors(name: str = "Light") -> dict[str, str]:
 
 
 def current_theme_name() -> str:
-    """Return the currently-active theme name by inspecting the app stylesheet."""
-    app = QApplication.instance()
-    if not app:
-        return "Light"
-    ss = app.styleSheet()
-    if "#1e1e1e" in ss:
-        return "Dark"
-    if "#e8eef7" in ss:
-        return "Blue Accent"
-    return "Light"
+    """Return the currently-active theme name."""
+    return _active_theme
 
 
 # ══════════════════════════════════════════════════════════════════════

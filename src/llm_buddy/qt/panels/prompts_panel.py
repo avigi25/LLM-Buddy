@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional
 
 from PySide6.QtCore import Qt, Slot, QTimer
-from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont
+from PySide6.QtGui import QKeySequence, QShortcut, QStandardItemModel, QStandardItem, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
     QLineEdit, QComboBox, QPlainTextEdit, QCheckBox,
@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
 )
 
 from llm_buddy.core.database import PromptRecord
-from llm_buddy.core.eadr import save_eadr_note
 
 # Type-only imports for constructor params
 from llm_buddy.qt.panels.capture_widgets import (
@@ -65,10 +64,6 @@ class PromptsPanel(QWidget):
         self.refresh_file_list()
         self.update_active_prompt_display()
 
-    # ==================================================================
-    # UI construction
-    # ==================================================================
-
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
@@ -86,7 +81,6 @@ class PromptsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         scroll.setWidget(container)
 
-        # ── Capture Sources ──────────────────────────────────────────
         capture_group = QGroupBox("Capture Sources")
         cap_lay = QVBoxLayout(capture_group)
         hint = QLabel(
@@ -100,7 +94,6 @@ class PromptsPanel(QWidget):
         cap_lay.addWidget(self._proxy_widget)
         layout.addWidget(capture_group)
 
-        # ── New Prompt entry ─────────────────────────────────────────
         entry_group = QGroupBox("New Prompt")
         eg = QVBoxLayout(entry_group)
 
@@ -146,9 +139,13 @@ class PromptsPanel(QWidget):
         btn_row.addStretch()
         eg.addLayout(btn_row)
 
+        # Ctrl+Enter records the prompt while the text box has focus
+        sc_record = QShortcut(QKeySequence("Ctrl+Return"), self._prompt_edit)
+        sc_record.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_record.activated.connect(self._record_prompt)
+
         layout.addWidget(entry_group)
 
-        # ── Active Prompt indicator ──────────────────────────────────
         active_group = QGroupBox("Active Prompt")
         ag = QHBoxLayout(active_group)
         self._active_label = QLabel("No active prompt")
@@ -162,7 +159,6 @@ class PromptsPanel(QWidget):
         ag.addWidget(btn_clear_active)
         layout.addWidget(active_group)
 
-        # ── Sub-tabs (history / file associations) ───────────────────
         splitter = QSplitter(Qt.Vertical)
 
         self._sub_tabs = QTabWidget()
@@ -188,6 +184,15 @@ class PromptsPanel(QWidget):
         # Track focus for Set Active / Delete
         self._history_tree.clicked.connect(
             lambda: self._set_last_focused(self._history_tree))
+
+        self._history_empty_label = QLabel(
+            "No prompts recorded yet\n\n"
+            "Start the  Proxy Recorder,  Chrome Extension,\n"
+            "or use the manual form below")
+        self._history_empty_label.setAlignment(Qt.AlignCenter)
+        self._history_empty_label.setStyleSheet(
+            "color: palette(mid); padding: 24px;")
+        hw_lay.addWidget(self._history_empty_label)
         hw_lay.addWidget(self._history_tree)
         self._sub_tabs.addTab(history_w, "Prompt History")
 
@@ -229,7 +234,6 @@ class PromptsPanel(QWidget):
 
         splitter.addWidget(self._sub_tabs)
 
-        # ── Detail view ──────────────────────────────────────────────
         detail_group = QGroupBox("Prompt Details")
         dg = QVBoxLayout(detail_group)
         self._detail_browser = QTextBrowser()
@@ -243,7 +247,6 @@ class PromptsPanel(QWidget):
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter, stretch=1)
 
-        # ── Action buttons ───────────────────────────────────────────
         action_row = QHBoxLayout()
         btn_set_active = QPushButton("Set as Active Prompt")
         btn_set_active.clicked.connect(self._set_active_prompt)
@@ -274,9 +277,6 @@ class PromptsPanel(QWidget):
 
         outer.addWidget(scroll)
 
-    # ==================================================================
-    # Focus tracking helper
-    # ==================================================================
 
     def _set_last_focused(self, tree: QTreeView) -> None:
         self._last_focused_tree = tree
@@ -285,9 +285,6 @@ class PromptsPanel(QWidget):
         """Return whichever tree the user last clicked in."""
         return self._last_focused_tree
 
-    # ==================================================================
-    # Auto-refresh (for capture sources)
-    # ==================================================================
 
     def start_auto_refresh(self) -> None:
         """Called by capture widgets when a source starts."""
@@ -305,9 +302,6 @@ class PromptsPanel(QWidget):
         if len(self._mw.prompt_database.prompts) != prev_count:
             self.refresh_prompt_history()
 
-    # ==================================================================
-    # Prompt CRUD
-    # ==================================================================
 
     @Slot()
     def _record_prompt(self) -> None:
@@ -335,10 +329,7 @@ class PromptsPanel(QWidget):
         self.update_active_prompt_display()
         self._clear_prompt_fields()
 
-        QMessageBox.information(
-            self, "Prompt Recorded",
-            "Prompt has been recorded and set as active.\n\n"
-            "Any files modified now will be associated with this prompt.")
+        self._mw.show_toast("Prompt recorded and set as active.", "success")
 
     @Slot()
     def _clear_prompt_fields(self) -> None:
@@ -385,9 +376,6 @@ class PromptsPanel(QWidget):
         self._show_file_prompts()
         self._detail_browser.clear()
 
-    # ==================================================================
-    # Cross-tab: Add to Branch (Prompt Explorer)
-    # ==================================================================
 
     @Slot()
     def _add_to_branch(self) -> None:
@@ -418,9 +406,6 @@ class PromptsPanel(QWidget):
 
         forking_panel.add_prompt_to_branch(prompt_id)
 
-    # ==================================================================
-    # History / detail views
-    # ==================================================================
 
     def refresh_prompt_history(self) -> None:
         """Reload the prompt history tree from the database."""
@@ -467,6 +452,11 @@ class PromptsPanel(QWidget):
 
             if prompt.id == prev_id:
                 restore_row = idx
+
+        # Toggle empty-state label
+        has_prompts = self._history_model.rowCount() > 0
+        self._history_empty_label.setVisible(not has_prompts)
+        self._history_tree.setVisible(has_prompts)
 
         # Restore selection
         if restore_row >= 0:
@@ -576,9 +566,6 @@ class PromptsPanel(QWidget):
             self._set_last_focused(self._file_tree)
             self._show_prompt_detail(prompt_id)
 
-    # ==================================================================
-    # File association helpers
-    # ==================================================================
 
     @Slot()
     def refresh_file_list(self) -> None:
@@ -641,9 +628,6 @@ class PromptsPanel(QWidget):
             self._file_model.appendRow(
                 [ts_item, llm_item, desc_item, fc_item, src_item])
 
-    # ==================================================================
-    # Active prompt
-    # ==================================================================
 
     @Slot()
     def _set_active_prompt(self) -> None:
@@ -670,10 +654,7 @@ class PromptsPanel(QWidget):
             self.update_active_prompt_display()
             self._mw.log(
                 f"Set active prompt: {prompt.description or 'Untitled'}")
-            QMessageBox.information(
-                self, "Active Prompt Set",
-                "Selected prompt has been set as active.\n\n"
-                "Any files modified now will be associated with this prompt.")
+            self._mw.show_toast("Active prompt set.", "success")
 
     @Slot()
     def _clear_active_prompt(self) -> None:
@@ -705,9 +686,6 @@ class PromptsPanel(QWidget):
             self._active_label.setFont(font)
             self._active_label.setStyleSheet("color: black;")
 
-    # ==================================================================
-    # Export
-    # ==================================================================
 
     @Slot()
     def _export_prompt_history(self) -> None:
@@ -769,9 +747,8 @@ class PromptsPanel(QWidget):
                     f.write("\n---\n\n")
 
             self._mw.log(f"Exported prompt history to {output_file}")
-            QMessageBox.information(
-                self, "Export Complete",
-                f"Prompt history has been exported to:\n{output_file}")
+            self._mw.show_toast(
+                f"Exported to: {os.path.basename(output_file)}", "success")
 
         except Exception as e:
             self._mw.log(f"Error exporting prompt history: {e}")
@@ -779,9 +756,6 @@ class PromptsPanel(QWidget):
                 self, "Export Error",
                 f"Failed to export prompt history:\n{e}")
 
-    # ==================================================================
-    # Retroactive Association dialog
-    # ==================================================================
 
     @Slot()
     def _open_retroactive_dialog(self) -> None:
@@ -800,10 +774,6 @@ class PromptsPanel(QWidget):
         self.refresh_prompt_history()
         self.refresh_file_list()
 
-
-# =====================================================================
-# Retroactive Association dialog
-# =====================================================================
 
 class _RetroactiveDialog(QDialog):
     """Modal dialog for retroactively associating files with a prompt."""
@@ -824,7 +794,6 @@ class _RetroactiveDialog(QDialog):
 
         db = self._mw.prompt_database
 
-        # ── 1. Prompt selection ──────────────────────────────────────
         pf = QGroupBox("Select Prompt")
         pf_lay = QHBoxLayout(pf)
         self._prompt_combo = QComboBox()
@@ -841,7 +810,6 @@ class _RetroactiveDialog(QDialog):
         pf_lay.addWidget(btn_view)
         layout.addWidget(pf)
 
-        # ── 2. File selection ────────────────────────────────────────
         ff = QGroupBox("Select Files to Associate")
         ff_lay = QVBoxLayout(ff)
 
@@ -893,7 +861,6 @@ class _RetroactiveDialog(QDialog):
 
         layout.addWidget(ff, stretch=1)
 
-        # ── 3. Association details ───────────────────────────────────
         nf = QGroupBox("Association Details")
         nf_lay = QVBoxLayout(nf)
 
@@ -930,7 +897,6 @@ class _RetroactiveDialog(QDialog):
 
         layout.addWidget(nf)
 
-        # ── 4. Dialog buttons ────────────────────────────────────────
         btn_row = QHBoxLayout()
         btn_cancel = QPushButton("Cancel")
         btn_cancel.clicked.connect(self.reject)
@@ -1114,7 +1080,7 @@ class _RetroactiveDialog(QDialog):
             eadr_panel = getattr(self._mw, "_eadr_panel", None)
             project = (eadr_panel.project
                        if eadr_panel else "Origin")
-            save_eadr_note(note_text, project)
+            self._mw.prompt_database.add_eadr_note(note_text, project)
             if eadr_panel:
                 eadr_panel.refresh()
 

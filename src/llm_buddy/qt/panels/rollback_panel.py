@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from llm_buddy.core.rollback import parse_combined_file, restore_file, get_file_diff
-from llm_buddy.core.eadr import save_eadr_note
+from llm_buddy.paths import get_backup_dir
 from llm_buddy.qt.theme import get_theme_colors, current_theme_name
 
 class DiffHighlighter(QSyntaxHighlighter):
@@ -51,7 +51,6 @@ class RollbackPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # ── Top: backup file picker ──────────────────────────────────
         top_row = QHBoxLayout()
         top_row.addWidget(QLabel("Backup File:"))
         self._path_edit = QLineEdit()
@@ -73,7 +72,6 @@ class RollbackPanel(QWidget):
         top_row.addWidget(btn_load)
         layout.addLayout(top_row)
 
-        # ── Splitter: file tree + diff preview ───────────────────────
         splitter = QSplitter(Qt.Horizontal)
 
         # File list
@@ -123,7 +121,6 @@ class RollbackPanel(QWidget):
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter, stretch=1)
 
-        # ── Bottom: restore button ───────────────────────────────────
         bot = QHBoxLayout()
         bot.addStretch()
         btn_restore = QPushButton("Restore Selected Files")
@@ -140,7 +137,7 @@ class RollbackPanel(QWidget):
     @Slot()
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select Backup File", "backup",
+            self, "Select Backup File", get_backup_dir(),
             "Markdown files (*.md);;All files (*.*)")
         if path:
             self._path_edit.setText(path)
@@ -175,9 +172,11 @@ class RollbackPanel(QWidget):
             stat_item.setEditable(False)
             stat_item.setToolTip(status)
             if status == "Modified":
-                stat_item.setForeground(QColor("#ef6c00"))
+                colors = get_theme_colors(current_theme_name())
+                stat_item.setForeground(QColor(colors["warning"]))
             elif status == "Missing":
-                stat_item.setForeground(QColor("#c62828"))
+                colors = get_theme_colors(current_theme_name())
+                stat_item.setForeground(QColor(colors["error"]))
             self._model.appendRow([path_item, stat_item])
 
         self._mw.log(

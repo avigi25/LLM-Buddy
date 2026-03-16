@@ -18,14 +18,11 @@ from PySide6.QtWidgets import (
 from llm_buddy.core.tokens import (
     build_combined_text, count_tokens,
 )
-from llm_buddy.core.eadr import save_eadr_note
 from llm_buddy.services.file_service import (
     scan_folder, filter_files,
     parse_extensions, parse_ignored_folders,
 )
 
-
-# ── Background scanner worker ────────────────────────────────────────
 
 class _ScanWorker(QObject):
     """Scans folders in a background QThread."""
@@ -53,8 +50,6 @@ class _ScanWorker(QObject):
         self.finished.emit(found)
 
 
-# ── Control Panel ─────────────────────────────────────────────────────
-
 class ControlPanel(QWidget):
     """Left-side control panel with file/folder management.
 
@@ -72,7 +67,6 @@ class ControlPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # ── Selection buttons ────────────────────────────────────────
         sel_group = QGroupBox("Selection")
         sel_layout = QHBoxLayout(sel_group)
         btn_folder = QPushButton("Add Folder")
@@ -87,7 +81,6 @@ class ControlPanel(QWidget):
         sel_layout.addWidget(btn_scan)
         layout.addWidget(sel_group)
 
-        # ── Filters ──────────────────────────────────────────────────
         filt_group = QGroupBox("Filters")
         filt_layout = QVBoxLayout(filt_group)
 
@@ -123,7 +116,6 @@ class ControlPanel(QWidget):
         filt_layout.addWidget(btn_apply)
         layout.addWidget(filt_group)
 
-        # ── Header / Footer ──────────────────────────────────────────
         hf_group = QGroupBox("Header / Footer")
         hf_layout = QVBoxLayout(hf_group)
         r1 = QHBoxLayout()
@@ -138,7 +130,6 @@ class ControlPanel(QWidget):
         hf_layout.addLayout(r2)
         layout.addWidget(hf_group)
 
-        # ── Actions ──────────────────────────────────────────────────
         action_row = QHBoxLayout()
         btn_combine = QPushButton("Combine Scripts")
         btn_combine.setProperty("class", "primary")
@@ -147,13 +138,11 @@ class ControlPanel(QWidget):
         action_row.addStretch()
         layout.addLayout(action_row)
 
-        # ── Progress bar ─────────────────────────────────────────────
         self._progress = QProgressBar()
         self._progress.setTextVisible(True)
         self._progress.setFormat("%v / %m folders scanned")
         layout.addWidget(self._progress)
 
-        # ── File tree ────────────────────────────────────────────────
         file_group = QGroupBox("Selected Files")
         file_layout = QVBoxLayout(file_group)
         self._file_model = QStandardItemModel()
@@ -167,6 +156,14 @@ class ControlPanel(QWidget):
         fh.setSectionResizeMode(QHeaderView.Interactive)
         fh.setStretchLastSection(True)
         fh.resizeSection(0, 300)
+
+        self._file_empty_label = QLabel(
+            "No files added yet\n\n"
+            "Click  Add Folder  or  Add File(s)  to begin")
+        self._file_empty_label.setAlignment(Qt.AlignCenter)
+        self._file_empty_label.setStyleSheet(
+            "color: palette(mid); padding: 24px;")
+        file_layout.addWidget(self._file_empty_label)
         file_layout.addWidget(self._file_tree)
         btn_rm_file = QPushButton("Remove Selected File(s)")
         btn_rm_file.setProperty("class", "danger")
@@ -174,7 +171,6 @@ class ControlPanel(QWidget):
         file_layout.addWidget(btn_rm_file)
         layout.addWidget(file_group, stretch=1)
 
-        # ── Folder tree ──────────────────────────────────────────────
         folder_group = QGroupBox("Selected Folders")
         folder_layout = QVBoxLayout(folder_group)
         self._folder_model = QStandardItemModel()
@@ -335,6 +331,10 @@ class ControlPanel(QWidget):
             tok_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._file_model.appendRow([path_item, tok_item])
 
+        has_files = self._file_model.rowCount() > 0
+        self._file_empty_label.setVisible(not has_files)
+        self._file_tree.setVisible(has_files)
+
         self._mw.log(f"Filter applied: {len(filtered)} files shown.")
 
         # Update folder tree — token counts based on the *filtered* list
@@ -447,7 +447,9 @@ class ControlPanel(QWidget):
                 total_tokens=total_tokens,
                 user_note=user_note,
             )
-            if save_eadr_note(note_text, project):
+            note_id = self._mw.prompt_database.add_eadr_note(
+                note_text, project)
+            if note_id >= 0:
                 self._mw.log(
                     "eADR note automatically created for combined scripts")
                 if hasattr(self._mw, '_eadr_panel'):

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-buddy"
-version = "3.0.0"
+version = "3.1.0"
 description = "Universal prompt recording and management system for LLM services"
 readme = "README.md"
 license = {text = "MIT"}
@@ -47,7 +47,7 @@ all = [
 llm-buddy = "llm_buddy.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/avigil06/LLM-Buddy"
+Homepage = "https://github.com/avigi25/LLM-Buddy"
 
 [tool.setuptools.packages.find]
 where = ["src"]

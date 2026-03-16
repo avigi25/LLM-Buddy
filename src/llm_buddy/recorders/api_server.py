@@ -13,13 +13,14 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from llm_buddy.core.database import PromptDatabase, PromptRecord
+from llm_buddy.paths import get_logs_dir
 
-os.makedirs("logs", exist_ok=True)
+_LOG_DIR = get_logs_dir()
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join("logs", "prompt_server.log")),
+        logging.FileHandler(os.path.join(_LOG_DIR, "prompt_server.log")),
         logging.StreamHandler(),
     ],
 )
@@ -67,6 +68,20 @@ def record_prompt():
         if data.get('pageTitle'):
             description += f" - {data['pageTitle']}"
 
+        # Build metadata from extension data
+        attachments = data.get('attachments')
+        parent_message_id = data.get('parentMessageId')
+        messages_count = data.get('messagesCount')
+        metadata = {}
+        if attachments:
+            metadata["attachments"] = attachments
+            description += f" [{len(attachments)} attachment(s)]"
+        if parent_message_id:
+            metadata["parent_message_id"] = parent_message_id
+        if messages_count is not None:
+            metadata["messages_count"] = messages_count
+        metadata = metadata or None
+
         # Record to unified database
         prompt_id = prompt_db.add_prompt(
             prompt_text=data.get('promptText', ''),
@@ -75,6 +90,8 @@ def record_prompt():
             model_name=data.get('modelName'),
             description=description,
             url=data.get('url'),
+            conversation_id=data.get('conversationId'),
+            metadata=metadata,
         )
 
         logger.info("Prompt saved to database: %s", description)
@@ -150,6 +167,45 @@ def update_response():
 
     except Exception as e:
         logger.error("Error updating response: %s", e, exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/update_conversation_id', methods=['POST'])
+def update_conversation_id():
+    """Update the conversation_id for a previously recorded prompt.
+
+    Used when the first message in a ChatGPT conversation is initially
+    recorded with a fallback conversation_id (e.g. "chatgpt.com/") and
+    the real UUID becomes available after the response.
+    """
+    try:
+        data = request.json
+        prompt_id = data.get('prompt_id')
+        conversation_id = data.get('conversation_id')
+
+        if not prompt_id or not conversation_id:
+            return jsonify({
+                "success": False,
+                "error": "Missing prompt_id or conversation_id",
+            }), 400
+
+        success = prompt_db.update_conversation_id(prompt_id, conversation_id)
+
+        if success:
+            logger.info("Updated conversation_id for prompt %s → %s",
+                        prompt_id, conversation_id)
+            return jsonify({
+                "success": True,
+                "message": f"conversation_id updated for prompt {prompt_id}",
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"Prompt {prompt_id} not found",
+            }), 404
+
+    except Exception as e:
+        logger.error("Error updating conversation_id: %s", e, exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 

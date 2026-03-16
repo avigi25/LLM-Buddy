@@ -8,8 +8,6 @@ from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from llm_buddy.core.eadr import load_eadr_notes
-
 logger = logging.getLogger(__name__)
 
 # Token counting — same logic as the original mixin
@@ -30,6 +28,7 @@ def compute_analytics_data(
     prompts: list,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    db=None,
 ) -> Dict[str, Any]:
     """Aggregate prompt data for the analytics dashboard.
 
@@ -92,15 +91,15 @@ def compute_analytics_data(
 
     # eADR notes on the timeline
     try:
-        notes = load_eadr_notes()
+        notes = db.get_eadr_notes() if db is not None else []
         for n in notes:
             try:
-                ts = datetime.strptime(n["timestamp"], "%Y-%m-%d %H:%M:%S")
+                ts = datetime.strptime(n.timestamp, "%Y-%m-%d %H:%M:%S")
                 if start_date and ts < start_date:
                     continue
                 if end_date and ts > end_date:
                     continue
-                label = n.get("note", "Note")
+                label = n.note or "Note"
                 if len(label) > 50:
                     label = label[:47] + "\u2026"
                 timeline_events.append({

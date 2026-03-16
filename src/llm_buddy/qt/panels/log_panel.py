@@ -42,7 +42,6 @@ class LogPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── Toolbar row ──────────────────────────────────────────────
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(6, 4, 6, 4)
 
@@ -69,7 +68,6 @@ class LogPanel(QWidget):
 
         layout.addLayout(toolbar)
 
-        # ── Log text area ────────────────────────────────────────────
         self._text = QTextEdit()
         self._text.setReadOnly(True)
         self._text.setFont(QFont("Consolas", 10))

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from llm_buddy.core.backup import AutoBackupConfig, EnhancedFileChangeHandler
 from llm_buddy.core.tokens import build_combined_text, count_tokens, count_tokens_in_file
-from llm_buddy.core.eadr import save_eadr_note
+from llm_buddy.paths import get_data_dir, get_backup_dir
 
 try:
     from watchdog.observers import Observer
@@ -47,7 +47,6 @@ class BackupPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # ── Enable toggle + status ───────────────────────────────────
         top_row = QHBoxLayout()
         self._chk_enabled = QCheckBox("Enable Auto-Backup")
         self._chk_enabled.toggled.connect(self._toggle)
@@ -60,7 +59,6 @@ class BackupPanel(QWidget):
         top_row.addStretch()
         layout.addLayout(top_row)
 
-        # ── Sub-tabs ─────────────────────────────────────────────────
         tabs = QTabWidget()
         layout.addWidget(tabs, stretch=1)
 
@@ -68,7 +66,6 @@ class BackupPanel(QWidget):
         tabs.addTab(self._build_settings_tab(), "Settings")
         tabs.addTab(self._build_history_tab(), "History")
 
-        # ── Bottom actions ───────────────────────────────────────────
         bot = QHBoxLayout()
         bot.addStretch()
         btn_refresh = QPushButton("Refresh Status")
@@ -79,10 +76,7 @@ class BackupPanel(QWidget):
         bot.addWidget(btn_force)
         layout.addLayout(bot)
 
-        # ── Load saved settings ──────────────────────────────────────
         self._load_settings()
-
-    # ── Sub-tab builders ─────────────────────────────────────────────
 
     def _build_files_tab(self) -> QWidget:
         w = QWidget()
@@ -195,8 +189,6 @@ class BackupPanel(QWidget):
         lay.addWidget(self._hist_tree)
         return w
 
-    # ── Toggle / Start / Stop ────────────────────────────────────────
-
     @Slot(bool)
     def _toggle(self, enabled: bool) -> None:
         if enabled:
@@ -298,8 +290,6 @@ class BackupPanel(QWidget):
             self._status_label.setStyleSheet(
                 "color: red; font-weight: bold;")
 
-    # ── Add / Remove monitored items ─────────────────────────────────
-
     @Slot()
     def _add_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -369,8 +359,6 @@ class BackupPanel(QWidget):
             self._mw.log(f"Removed {fp} from monitored folders")
         self._restart_if_active()
 
-    # ── Settings persistence ─────────────────────────────────────────
-
     @Slot()
     def _save_settings(self) -> None:
         self._config.ignored_patterns = [
@@ -381,7 +369,7 @@ class BackupPanel(QWidget):
         self._config.max_backups = self._max_backups_spin.value()
         self._config.notification_enabled = self._chk_notify.isChecked()
         try:
-            with open(os.path.join("data", "auto_backup_settings.json"), "w",
+            with open(os.path.join(get_data_dir(), "auto_backup_settings.json"), "w",
                        encoding="utf-8") as f:
                 json.dump(self._config.to_dict(), f, indent=4)
             self._mw.log("Auto-backup settings saved")
@@ -390,7 +378,7 @@ class BackupPanel(QWidget):
             self._mw.log(f"Error saving settings: {e}")
 
     def _load_settings(self) -> None:
-        settings_path = os.path.join("data", "auto_backup_settings.json")
+        settings_path = os.path.join(get_data_dir(), "auto_backup_settings.json")
         if not os.path.exists(settings_path):
             self._ignored_edit.setText(
                 ",".join(self._config.ignored_patterns))
@@ -431,8 +419,6 @@ class BackupPanel(QWidget):
                 self._start_monitoring()
         except Exception as e:
             self._mw.log(f"Error loading settings: {e}")
-
-    # ── Backup execution ─────────────────────────────────────────────
 
     def _trigger_backup(self, changed_files) -> bool:
         """Create an auto-backup (called from file watcher)."""
@@ -475,8 +461,7 @@ class BackupPanel(QWidget):
             files_to_backup, header, "End of Auto-Backup")
         total_tokens = count_tokens(combined)
 
-        output_dir = "backup"
-        os.makedirs(output_dir, exist_ok=True)
+        output_dir = get_backup_dir()
         output_file = os.path.join(output_dir, backup_name)
 
         try:
@@ -555,13 +540,14 @@ class BackupPanel(QWidget):
         note += "Changed files:\n"
         for fp, tc in changed_files:
             note += f"- {fp} ({tc:+,} tokens)\n"
-        if save_eadr_note(note, project):
+        note_id = self._mw.prompt_database.add_eadr_note(note, project)
+        if note_id >= 0:
             self._mw.log(f"eADR note created for auto-backup")
             if hasattr(self._mw, '_eadr_panel'):
                 self._mw._eadr_panel.refresh()
 
     def _prune_old(self) -> None:
-        backup_dir = "backup"
+        backup_dir = get_backup_dir()
         if not os.path.exists(backup_dir):
             return
         auto_backups = []
@@ -577,8 +563,6 @@ class BackupPanel(QWidget):
                     f"Pruned old backup: {os.path.basename(fp)}")
             except Exception as e:
                 self._mw.log(f"Error pruning {fp}: {e}")
-
-    # ── Cleanup ──────────────────────────────────────────────────────
 
     def stop(self) -> None:
         """Stop the observer (call on app close)."""

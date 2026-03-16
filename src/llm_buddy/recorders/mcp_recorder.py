@@ -20,14 +20,18 @@ from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.fastmcp.prompts import base
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# The MCP server is launched by Claude Desktop with CWD=System32.
-# Set CWD to the project root so that database.py (which uses
-# os.getcwd()) resolves DATA_DIR correctly.
-_PROJECT_ROOT = os.path.normpath(os.path.join(_SCRIPT_DIR, os.pardir, os.pardir, os.pardir))
-os.chdir(_PROJECT_ROOT)
 
-_LOG_DIR = os.path.join(_PROJECT_ROOT, "logs")
-os.makedirs(_LOG_DIR, exist_ok=True)
+# The MCP server may be launched by Claude Desktop with CWD=System32.
+# Set CWD to the app root so any residual os.getcwd() calls resolve
+# correctly (e.g. when running from source, not frozen).
+if not getattr(sys, "frozen", False):
+    _APP_ROOT = os.path.normpath(
+        os.path.join(_SCRIPT_DIR, os.pardir, os.pardir, os.pardir))
+    os.chdir(_APP_ROOT)
+
+from llm_buddy.paths import get_logs_dir  # noqa: E402 (after chdir)
+
+_LOG_DIR = get_logs_dir()
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -57,9 +61,6 @@ auto_record_enabled: bool = True
 _last_prompt_id: Optional[str] = None
 
 
-# ------------------------------------------------------------------
-# Local JSON helpers (fallback when package not installed)
-# ------------------------------------------------------------------
 
 def _load_prompts_json():
     try:
@@ -88,9 +89,6 @@ def _save_prompt_json(prompt_data):
         return False
 
 
-# ------------------------------------------------------------------
-# MCP Server
-# ------------------------------------------------------------------
 
 mcp = FastMCP(
     "Auto Claude Recorder",
@@ -103,8 +101,6 @@ mcp = FastMCP(
     ),
 )
 
-
-# ---- Resources ----
 
 @mcp.resource("files://active")
 def get_active_files() -> str:
@@ -127,8 +123,6 @@ def get_recording_status() -> str:
     return (f"Auto-recording is {status}. {count} prompts recorded so far.\n"
             f"All your prompts are being automatically saved.")
 
-
-# ---- Tools ----
 
 @mcp.tool()
 def auto_record_prompt(prompt_text: str, description: str = "",
@@ -153,7 +147,6 @@ def auto_record_prompt(prompt_text: str, description: str = "",
     if not prompt_text.strip():
         return {"success": False, "message": "Empty prompt text"}
 
-    # ── Attach the previous response to the last recorded prompt ──
     if previous_response.strip() and _last_prompt_id:
         logger.info("Recording previous response for prompt %s",
                      _last_prompt_id)
@@ -171,7 +164,6 @@ def auto_record_prompt(prompt_text: str, description: str = "",
             except Exception as e:
                 logger.error("Error saving previous response: %s", e)
 
-    # ── Record the new prompt ──
     logger.info("Auto-recording prompt: %s...", prompt_text[:50])
 
     prompt_id = str(uuid.uuid4())
@@ -339,8 +331,6 @@ def test_database_write() -> Dict[str, Any]:
         logger.error("Test write failed: %s", e)
         return {"success": False, "error": str(e)}
 
-
-# ---- Prompts ----
 
 @mcp.prompt()
 def auto_record_setup() -> str:

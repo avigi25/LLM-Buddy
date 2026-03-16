@@ -7,7 +7,6 @@ import os
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from llm_buddy.core.eadr import save_eadr_note
 
 
 def infer_source(prompt) -> str:
@@ -149,7 +148,7 @@ def perform_retroactive_association(
             f"User Notes:\n{notes}\n\nFiles:\n")
         for fp in selected_files:
             note_text += f"- {fp}\n"
-        save_eadr_note(note_text, project)
+        prompt_database.add_eadr_note(note_text, project)
 
     already = len(selected_files) - newly_added
     return newly_added, already

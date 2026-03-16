@@ -28,8 +28,9 @@
   if (!SITE) return;
 
   let lastPrompt = "";
+  let lastConversationId = null;
   let debounceTimer = null;
-  let lastPromptId = null; 
+  let lastPromptId = null;
 
   console.log(`LLM Buddy: monitoring ${SITE} for prompts and responses`);
 
@@ -49,6 +50,23 @@
     if (host.includes("you.com")) return "You.com";
     if (host.includes("phind.com")) return "Phind";
     return null;
+  }
+
+  // --- Conversation ID extraction from URL ---
+  function extractConversationId() {
+    const path = location.pathname;
+    // Claude.ai: /chat/{uuid}
+    const claudeMatch = path.match(/\/chat\/([0-9a-f-]{8,})/i);
+    if (claudeMatch) return claudeMatch[1];
+    // ChatGPT: /c/{uuid}
+    const gptMatch = path.match(/\/c\/([0-9a-f-]{8,})/i);
+    if (gptMatch) return gptMatch[1];
+    // Generic: last path segment if it looks like an ID (>= 8 chars, alphanumeric/dash/underscore)
+    const segments = path.split("/").filter(Boolean);
+    const last = segments[segments.length - 1] || "";
+    if (last.length >= 8 && /^[a-z0-9_-]+$/i.test(last)) return last;
+    // Fallback: hostname + path (stable within a conversation page)
+    return location.hostname + path;
   }
 
   // --- Prompt extraction ---
@@ -164,12 +182,14 @@
 
   // --- Send prompt to background ---
   // --- Send prompt to background ---
-  function capturePrompt(text) {
-    if (!text || text.length < 2) return;
-    if (text === lastPrompt) return;
+  function capturePrompt(text, attachments, interceptorConversationId, parentMessageId, messagesCount) {
+    if ((!text || text.length < 2) && !attachments) return;
+    const currentConvId = interceptorConversationId || extractConversationId();
+    if (text === lastPrompt && !attachments && currentConvId === lastConversationId) return;
     lastPrompt = text;
+    lastConversationId = currentConvId;
 
-    console.log(`LLM Buddy: captured ${SITE} prompt (${text.length} chars)`);
+    console.log(`LLM Buddy: captured ${SITE} prompt (${(text || "").length} chars${attachments ? `, ${attachments.length} attachment(s)` : ""})`);
 
     try {
       chrome.runtime.sendMessage(
@@ -177,10 +197,14 @@
           type: "PROMPT_CAPTURED",
           data: {
             llmName: SITE,
-            promptText: text,
+            promptText: text || "",
             url: location.href,
             pageTitle: document.title,
             modelName: SITE,
+            conversationId: currentConvId,
+            attachments: attachments || undefined,
+            parentMessageId: parentMessageId || undefined,
+            messagesCount: messagesCount || undefined,
           },
         },
         (response) => {
@@ -191,6 +215,11 @@
           if (response && response.result && response.result.prompt_id) {
             lastPromptId = response.result.prompt_id;
             watchForResponse(lastPromptId);
+            // If the conversation_id was a fallback (no UUID in URL),
+            // watch for URL changes to get the real one.
+            if (currentConvId && !/[0-9a-f]{8,}-/.test(currentConvId)) {
+              watchForConversationId(lastPromptId, currentConvId);
+            }
           }
         }
       );
@@ -203,9 +232,38 @@
     }
   }
 
-  // --- Watch for LLM response after prompt submission ---
+  // --- Watch for URL change to get the real conversation_id ---
+  // ChatGPT (and others) create the conversation_id only after the
+  // first response.  The URL changes from e.g. chatgpt.com/ to
+  // chatgpt.com/c/{uuid}.  When that happens, send an update so the
+  // prompt is grouped correctly.
+  function watchForConversationId(promptId, fallbackCid) {
+    let checks = 0;
+    const MAX = 30; // 30 seconds max
+    const timer = setInterval(() => {
+      checks++;
+      const newCid = extractConversationId();
+      if (newCid && newCid !== fallbackCid && /[0-9a-f]{8,}-/.test(newCid)) {
+        clearInterval(timer);
+        console.log(`LLM Buddy: updated conversation_id for prompt ${promptId}: ${fallbackCid} -> ${newCid}`);
+        try {
+          chrome.runtime.sendMessage({
+            type: "CONVERSATION_ID_UPDATE",
+            data: { promptId, conversationId: newCid },
+          });
+        } catch (e) {
+          // Extension context may be invalidated
+        }
+      }
+      if (checks >= MAX) clearInterval(timer);
+    }, 1000);
+  }
+
   // --- Watch for LLM response after prompt submission ---
   function watchForResponse(promptId) {
+    // Snapshot whatever is already in the DOM so we don't mistake the
+    // previous turn's response for the new one (stale-content bug).
+    const initialContent = getLastAssistantMessage();
     let lastContent = "";
     let stableCount = 0;
     let checkCount = 0;
@@ -216,12 +274,14 @@
       checkCount++;
       const currentContent = getLastAssistantMessage();
 
-      if (currentContent && currentContent.length > 0 && currentContent === lastContent) {
+      // Only start counting stability once NEW content (different from
+      // the pre-existing snapshot) appears and then stabilises.
+      if (currentContent && currentContent !== initialContent && currentContent === lastContent) {
         stableCount++;
         if (stableCount >= STABLE_THRESHOLD) {
           clearInterval(checker);
           console.log(`LLM Buddy: captured ${SITE} response (${currentContent.length} chars)`);
-          
+
           try {
             chrome.runtime.sendMessage({
               type: "RESPONSE_CAPTURED",
@@ -250,9 +310,10 @@
 
       if (checkCount >= MAX_CHECKS) {
         clearInterval(checker);
-        if (lastContent && lastContent.length > 10) {
+        // Only save on timeout if we actually got new content (not the old snapshot).
+        if (lastContent && lastContent !== initialContent && lastContent.length > 10) {
           console.log(`LLM Buddy: response timeout, saving partial (${lastContent.length} chars)`);
-          
+
           try {
             chrome.runtime.sendMessage({
               type: "RESPONSE_CAPTURED",
@@ -326,10 +387,34 @@
 
   // Listen for messages bridged from the injected script
   window.addEventListener("LLMBuddy_Capture", (e) => {
-    const text = e.detail;
-    if (text) {
+    const detail = e.detail;
+    // Support both old format (string) and new format ({text, attachments})
+    const text = typeof detail === "string" ? detail : detail?.text;
+    const isObj = typeof detail === "object" && detail !== null;
+    const attachments = isObj ? detail?.attachments : null;
+    const conversationId = isObj ? detail?.conversationId : null;
+    const parentMessageId = isObj ? detail?.parentMessageId : null;
+    const messagesCount = isObj ? detail?.messagesCount : null;
+    if (text || attachments) {
       clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => capturePrompt(text), 50);
+      debounceTimer = setTimeout(() => capturePrompt(text, attachments, conversationId, parentMessageId, messagesCount), 50);
+    }
+  });
+
+  // Listen for conversation_id updates from the interceptor (fired when
+  // the first SSE response chunk contains the real conversation_id).
+  window.addEventListener("LLMBuddy_ConvIdUpdate", (e) => {
+    const newCid = e.detail?.conversationId;
+    if (newCid && lastPromptId) {
+      console.log(`LLM Buddy: got conversation_id from response: ${newCid}`);
+      try {
+        chrome.runtime.sendMessage({
+          type: "CONVERSATION_ID_UPDATE",
+          data: { promptId: lastPromptId, conversationId: newCid },
+        });
+      } catch (err) {
+        // Extension context may be invalidated
+      }
     }
   });
 

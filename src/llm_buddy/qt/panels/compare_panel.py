@@ -31,10 +31,6 @@ _TAG_INSERT   = "insert"    # only in B
 _TAG_EMPTY    = "empty"     # padding line inserted for alignment
 
 
-# ---------------------------------------------------------------------------
-# Aligned diff builder
-# ---------------------------------------------------------------------------
-
 def _build_aligned_diff(
     lines_a: list[str],
     lines_b: list[str],
@@ -78,10 +74,6 @@ def _build_aligned_diff(
     return aligned_a, aligned_b
 
 
-# ---------------------------------------------------------------------------
-# Colour helpers
-# ---------------------------------------------------------------------------
-
 def _diff_colors(side: str) -> dict[str, QColor]:
     """Return background QColors for each tag on *side* ('a' or 'b').
 
@@ -110,10 +102,6 @@ def _diff_colors(side: str) -> dict[str, QColor]:
         }
 
 
-# ---------------------------------------------------------------------------
-# Side-by-side pane
-# ---------------------------------------------------------------------------
-
 class _DiffPane(QWidget):
     """A labelled, read-only text pane used for one side of the diff view."""
 
@@ -141,7 +129,6 @@ class _DiffPane(QWidget):
         self._edit.setStyleSheet("border: none;")
         layout.addWidget(self._edit, stretch=1)
 
-    # ------------------------------------------------------------------
     def set_title(self, title: str) -> None:
         self._edit_title = title
         # Truncate long paths for the header label
@@ -190,10 +177,6 @@ class _DiffPane(QWidget):
         # Scroll back to top after populating
         edit.moveCursor(QTextCursor.Start)
 
-
-# ---------------------------------------------------------------------------
-# File picker (unchanged from original, kept self-contained)
-# ---------------------------------------------------------------------------
 
 class _FilePicker(QWidget):
     """Reusable picker that can load a standalone file or a file from a backup."""
@@ -336,10 +319,6 @@ class _FilePicker(QWidget):
             self._entry_combo.setCurrentIndex(state["entry_idx"])
 
 
-# ---------------------------------------------------------------------------
-# Legend widget
-# ---------------------------------------------------------------------------
-
 class _Legend(QWidget):
     """Compact horizontal colour legend for the diff view."""
 
@@ -379,10 +358,6 @@ class _Legend(QWidget):
         layout.addStretch()
 
 
-# ---------------------------------------------------------------------------
-# Main ComparePanel
-# ---------------------------------------------------------------------------
-
 class ComparePanel(QWidget):
     """VSCode-style split-pane file comparison.
 
@@ -401,7 +376,6 @@ class ComparePanel(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # ── Pickers row (side by side at the top) ────────────────────────
         pickers_row = QHBoxLayout()
         pickers_row.setSpacing(6)
         self._picker_a = _FilePicker("File A  (left)", self)
@@ -410,7 +384,6 @@ class ComparePanel(QWidget):
         pickers_row.addWidget(self._picker_b)
         layout.addLayout(pickers_row)
 
-        # ── Action buttons ───────────────────────────────────────────────
         action_row = QHBoxLayout()
         action_row.addStretch()
 
@@ -428,11 +401,9 @@ class ComparePanel(QWidget):
         action_row.addStretch()
         layout.addLayout(action_row)
 
-        # ── Colour legend ────────────────────────────────────────────────
         self._legend = _Legend(self)
         layout.addWidget(self._legend)
 
-        # ── Splitter with two diff panes ─────────────────────────────────
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(4)
 
@@ -446,19 +417,15 @@ class ComparePanel(QWidget):
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter, stretch=1)
 
-        # ── Stats bar ────────────────────────────────────────────────────
         self._stats = QLabel("")
         self._stats.setStyleSheet("font-size: 10px; color: palette(mid);")
         self._stats.setContentsMargins(4, 0, 4, 0)
         layout.addWidget(self._stats)
 
-        # ── Synchronised scrolling ───────────────────────────────────────
         self._pane_a.scroll_bar().valueChanged.connect(self._sync_v_from_a)
         self._pane_b.scroll_bar().valueChanged.connect(self._sync_v_from_b)
         self._pane_a.h_scroll_bar().valueChanged.connect(self._sync_h_from_a)
         self._pane_b.h_scroll_bar().valueChanged.connect(self._sync_h_from_b)
-
-    # -- scroll sync -------------------------------------------------------
 
     @Slot(int)
     def _sync_v_from_a(self, value: int) -> None:

@@ -12,26 +12,14 @@ Improvements over v3.0:
   - Soft-delete support (hidden flag on Branch)
 """
 
-import json
 import logging
-import os
 import uuid
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.path.join(os.getcwd(), "data")
-os.makedirs(DATA_DIR, exist_ok=True)
-
-# Update the default:
-DEFAULT_TREES_PATH = os.path.join(DATA_DIR, "conversation_trees.json")
-
-# =====================================================================
-# Constants (value, display_label)
-# =====================================================================
 
 FORK_TRIGGERS = [
     ("error_cascade", "Error Cascade"),
@@ -61,9 +49,6 @@ TREE_STATUSES = [
     ("archived", "Archived"),
 ]
 
-# =====================================================================
-# Helpers
-# =====================================================================
 
 def _parse_dt(s: str) -> Optional[datetime]:
     if not s:
@@ -83,9 +68,6 @@ def _norm_pos(v):
         return (float(v["x"]), float(v["y"]))
     return None
 
-# =====================================================================
-# Data model
-# =====================================================================
 
 @dataclass
 class ForkPoint:
@@ -151,7 +133,6 @@ class Branch:
     session_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    # --- Improvement #9: Soft-delete support ---
     hidden: bool = False
 
     def __post_init__(self):
@@ -214,7 +195,6 @@ class ConversationTree:
     tags: List[str] = field(default_factory=list)
     source_conversation_id: Optional[str] = None
     layout_positions: Dict[str, Tuple[float, float]] = field(default_factory=dict)
-    # --- Improvement #5: Explicit branch checkout ---
     checked_out_branch_id: Optional[str] = None
 
     def __post_init__(self):
@@ -309,7 +289,6 @@ class ConversationTree:
         self.updated_at = datetime.now()
         return new_branch
 
-    # --- Improvement #1: Merge workflow ---
     def merge_branch(
         self, source_branch_id: str, target_branch_id: str,
         merge_insights: str = "", include_unique_prompts: bool = True,
@@ -363,7 +342,6 @@ class ConversationTree:
         self.updated_at = datetime.now()
         return True
 
-    # --- Improvement #9: Soft-delete ---
     def soft_delete_branch(self, branch_id: str) -> bool:
         """Hide a branch and its descendants without destroying data."""
         branch = self.get_branch(branch_id)
@@ -405,7 +383,6 @@ class ConversationTree:
         self.updated_at = datetime.now()
         return True
 
-    # --- Improvement #4: Move prompt between branches ---
     def move_prompt(self, prompt_id: str, from_branch_id: str, to_branch_id: str) -> bool:
         """Move a prompt from one branch to another."""
         src = self.get_branch(from_branch_id)
@@ -486,9 +463,6 @@ class ConversationTree:
 
         return tree
 
-# =====================================================================
-# Auto-detection helpers
-# =====================================================================
 
 def auto_detect_trees(prompt_database) -> List[Dict[str, Any]]:
     groups: Dict[str, List] = {}
@@ -500,7 +474,18 @@ def auto_detect_trees(prompt_database) -> List[Dict[str, Any]]:
     for p in prompt_database.prompts:
         cid = getattr(p, "conversation_id", None) or ""
         if not cid:
-            continue
+            # Backward-compat: group old extension prompts recorded before the
+            # conversationId fix by their URL path (stable within a conversation).
+            if getattr(p, "source", "") == "Browser Extension" and getattr(p, "url", ""):
+                from urllib.parse import urlparse
+                parsed = urlparse(p.url)
+                cid = parsed.netloc + parsed.path
+            else:
+                continue
+        # Normalize Gemini fallback IDs so proxy ("gemini.google.com/")
+        # and extension ("gemini.google.com/app") group together.
+        if cid in ("gemini.google.com/", "gemini.google.com"):
+            cid = "gemini.google.com/app"
         groups.setdefault(cid, []).append(p)
 
     suggestions = []
@@ -520,29 +505,223 @@ def auto_detect_trees(prompt_database) -> List[Dict[str, Any]]:
     suggestions.sort(key=lambda s: s["last_timestamp"], reverse=True)
     return suggestions
 
-# =====================================================================
-# Persistence
-# =====================================================================
 
-def load_conversation_trees(path: Optional[str] = None) -> List[ConversationTree]:
-    fpath = path or DEFAULT_TREES_PATH
-    if not os.path.exists(fpath):
-        return []
-    try:
-        with open(fpath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return [ConversationTree.from_dict(d) for d in data]
-    except Exception as e:
-        logger.error("Error loading conversation trees: %s", e)
-        return []
+def build_tree_with_forks(tree: ConversationTree, prompts, db) -> bool:
+    """Detect forks in a list of prompts and build branches accordingly.
 
-def save_conversation_trees(trees: List[ConversationTree], path: Optional[str] = None) -> bool:
-    fpath = path or DEFAULT_TREES_PATH
-    try:
-        data = [t.to_dict() for t in trees]
-        with open(fpath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
-        return True
-    except Exception as e:
-        logger.error("Error saving conversation trees: %s", e)
+    Each prompt is independently placed on the correct branch based on its
+    metadata — the function never relies on "checked-out branch" state to
+    decide placement.
+
+    Strategies (tried in order for each prompt):
+    1. ``parent_message_id`` — if another prompt already shares the same
+       parent, fork.  Otherwise, find the branch whose tip was the most
+       recently placed prompt (its response generated this parent_message_id)
+       and append there.
+    2. ``messages_count`` — find the branch whose tip messages_count equals
+       ``this_prompt.messages_count - 2``.  If none match but a branch has
+       a *higher* count, the user went back → fork.
+    3. Fallback — append to the root branch.
+
+    Returns True if the tree was modified.
+    """
+    if not prompts:
         return False
+
+    existing_ids: set = set()
+    for b in tree.branches:
+        existing_ids.update(b.prompt_ids)
+
+    new_prompts = [p for p in prompts if p.id not in existing_ids]
+    if not new_prompts:
+        return False
+
+    root = tree.get_root_branch()
+    if root is None:
+        return False
+
+    # --- Lookup: parent_message_id → [(branch, prompt_index)] ---
+    # Tracks which prompts reply to which parent messages.
+    pmid_locs: Dict[str, List[tuple]] = {}
+
+    # --- Lookup: branch_id → messages_count of last prompt ---
+    tip_mc: Dict[str, int] = {}
+
+    # --- Lookup: branch_id → timestamp of the most recently placed prompt ---
+    # Used to determine which branch a new prompt continues when its
+    # parent_message_id is new (i.e. it's a linear continuation, not a fork).
+    tip_ts: Dict[str, Any] = {}
+
+    def _index_branch(branch):
+        """Add all prompts in *branch* to the lookup maps."""
+        for idx, pid in enumerate(branch.prompt_ids):
+            p = db.get_prompt(pid)
+            if not p:
+                continue
+            if p.metadata:
+                pmid = p.metadata.get("parent_message_id")
+                if pmid:
+                    pmid_locs.setdefault(pmid, []).append((branch, idx))
+                mc = p.metadata.get("messages_count")
+                if mc is not None:
+                    tip_mc[branch.id] = mc
+            # Always track the latest timestamp per branch
+            ts = p.timestamp
+            if ts and (branch.id not in tip_ts or ts > tip_ts[branch.id]):
+                tip_ts[branch.id] = ts
+
+    for branch in tree.branches:
+        _index_branch(branch)
+
+    def _append_to_branch(branch, prompt, parent_msg_id, msg_count):
+        """Helper: append *prompt* to *branch* and update lookup maps."""
+        branch.prompt_ids.append(prompt.id)
+        branch.updated_at = prompt.timestamp
+        if parent_msg_id:
+            pmid_locs.setdefault(parent_msg_id, []).append(
+                (branch, len(branch.prompt_ids) - 1))
+        if msg_count is not None:
+            tip_mc[branch.id] = msg_count
+        tip_ts[branch.id] = prompt.timestamp
+
+    modified = False
+
+    for prompt in new_prompts:
+        meta = prompt.metadata or {}
+        parent_msg_id = meta.get("parent_message_id")
+        msg_count = meta.get("messages_count")
+        placed = False
+
+        # ----------------------------------------------------------
+        # Strategy 1: parent_message_id
+        # ----------------------------------------------------------
+        if parent_msg_id:
+            siblings = pmid_locs.get(parent_msg_id, [])
+            if siblings:
+                # Another prompt already replies to the same parent → fork.
+                # The fork point is one index BEFORE the existing sibling
+                # (i.e., the prompt whose *response* is the shared parent).
+                sib_branch, sib_idx = siblings[0]
+                fork_idx = max(0, sib_idx - 1)
+
+                branch_num = len(tree.branches)
+                new_branch = tree.add_branch(
+                    name=f"branch-{branch_num}",
+                    parent_branch_id=sib_branch.id,
+                    fork_index=fork_idx,
+                    trigger="auto_detected",
+                    reason="Shared parent_message_id",
+                )
+                if new_branch:
+                    new_branch.prompt_ids.append(prompt.id)
+                    pmid_locs.setdefault(parent_msg_id, []).append(
+                        (new_branch, len(new_branch.prompt_ids) - 1))
+                    if msg_count is not None:
+                        tip_mc[new_branch.id] = msg_count
+                    tip_ts[new_branch.id] = prompt.timestamp
+                    modified = True
+                    placed = True
+            else:
+                # No sibling — this parent_message_id is new.  This prompt
+                # is a linear continuation of whichever branch's tip prompt
+                # generated the response.  Since we don't store response
+                # message IDs, we use the heuristic: the branch whose tip
+                # was placed most recently (chronologically) before this
+                # prompt is the one the user is currently on.
+                if tip_ts:
+                    best_branch = None
+                    best_ts = None
+                    for branch in tree.branches:
+                        ts = tip_ts.get(branch.id)
+                        if ts is not None and ts < prompt.timestamp:
+                            if best_ts is None or ts > best_ts:
+                                best_ts = ts
+                                best_branch = branch
+                    if best_branch is not None:
+                        _append_to_branch(best_branch, prompt,
+                                          parent_msg_id, msg_count)
+                        modified = True
+                        placed = True
+
+        # ----------------------------------------------------------
+        # Strategy 2: messages_count
+        # ----------------------------------------------------------
+        if not placed and msg_count is not None:
+            # Find a branch whose tip messages_count == msg_count - 2.
+            # That branch is the natural linear continuation target.
+            continuation_branch = None
+            for branch in tree.branches:
+                btmc = tip_mc.get(branch.id)
+                if btmc is not None and btmc == msg_count - 2:
+                    continuation_branch = branch
+                    break
+
+            if continuation_branch is not None:
+                _append_to_branch(continuation_branch, prompt,
+                                  parent_msg_id, msg_count)
+                modified = True
+                placed = True
+            else:
+                # No branch has the expected tip count.
+                # If msg_count is LESS than the highest tip, user went back.
+                max_mc = max(tip_mc.values()) if tip_mc else 0
+                if max_mc > 0 and msg_count <= max_mc:
+                    # Find the fork point: the branch and prompt whose
+                    # messages_count is closest to (but <=) msg_count - 2.
+                    best_branch = None
+                    best_idx = 0
+                    best_diff = float("inf")
+                    target_mc = msg_count - 2  # the prompt we're replying to
+                    for branch in tree.branches:
+                        for idx, pid in enumerate(branch.prompt_ids):
+                            p = db.get_prompt(pid)
+                            if p and p.metadata:
+                                p_mc = p.metadata.get("messages_count")
+                                if p_mc is not None and p_mc <= target_mc:
+                                    diff = target_mc - p_mc
+                                    if diff < best_diff:
+                                        best_diff = diff
+                                        best_branch = branch
+                                        best_idx = idx
+
+                    if best_branch is not None:
+                        # Check if best_idx is the tip — if so, just append
+                        if best_idx == len(best_branch.prompt_ids) - 1:
+                            _append_to_branch(best_branch, prompt,
+                                              parent_msg_id, msg_count)
+                            modified = True
+                            placed = True
+                        else:
+                            # Fork from best_idx
+                            branch_num = len(tree.branches)
+                            new_branch = tree.add_branch(
+                                name=f"branch-{branch_num}",
+                                parent_branch_id=best_branch.id,
+                                fork_index=best_idx,
+                                trigger="auto_detected",
+                                reason="messages_count regression",
+                            )
+                            if new_branch:
+                                new_branch.prompt_ids.append(prompt.id)
+                                tip_mc[new_branch.id] = msg_count
+                                if parent_msg_id:
+                                    pmid_locs.setdefault(
+                                        parent_msg_id, []).append(
+                                        (new_branch,
+                                         len(new_branch.prompt_ids) - 1))
+                                tip_ts[new_branch.id] = prompt.timestamp
+                                modified = True
+                                placed = True
+
+        # ----------------------------------------------------------
+        # Fallback: append to root
+        # ----------------------------------------------------------
+        if not placed:
+            _append_to_branch(root, prompt, parent_msg_id, msg_count)
+            modified = True
+
+    if modified:
+        tree.updated_at = new_prompts[-1].timestamp
+
+    return modified
+

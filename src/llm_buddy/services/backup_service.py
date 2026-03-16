@@ -8,12 +8,12 @@ import os
 from datetime import datetime
 from typing import List, Tuple
 
-from llm_buddy.core.eadr import save_eadr_note
 from llm_buddy.core.tokens import (
     build_combined_text,
     count_tokens,
     count_tokens_in_file,
 )
+from llm_buddy.paths import get_backup_dir
 
 
 def create_auto_backup(
@@ -21,12 +21,14 @@ def create_auto_backup(
     monitor_files: List[str],
     active_prompt,
     prompt_database,
-    output_dir: str = "backup",
+    output_dir: str = None,
 ) -> Tuple[bool, str]:
     """Create an auto-backup file.
 
     Returns ``(success, output_file_path)``.
     """
+    if output_dir is None:
+        output_dir = get_backup_dir()
     active_prompt_info = ""
     if active_prompt:
         for fp, tc in changed_files:

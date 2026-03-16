@@ -129,9 +129,6 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-# =========================================================================
-#  AnalyticsPanel
-# =========================================================================
 
 class AnalyticsPanel(QWidget):
     """Analytics dashboard with date filters, summary stats, and charts.
@@ -153,7 +150,6 @@ class AnalyticsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
 
-        # ── Date-range filter row ────────────────────────────────────
         filter_group = QGroupBox("Date Range")
         filter_layout = QHBoxLayout(filter_group)
 
@@ -193,7 +189,6 @@ class AnalyticsPanel(QWidget):
         filter_layout.addStretch()
         root.addWidget(filter_group)
 
-        # ── Summary stat cards ───────────────────────────────────────
         stats_layout = QHBoxLayout()
         stats_layout.setSpacing(12)
 
@@ -211,7 +206,6 @@ class AnalyticsPanel(QWidget):
 
         root.addLayout(stats_layout)
 
-        # ── 2x2 chart grid ──────────────────────────────────────────
         if _CHARTS_AVAILABLE:
             chart_grid = QGridLayout()
             chart_grid.setContentsMargins(0, 0, 0, 0)
@@ -237,9 +231,6 @@ class AnalyticsPanel(QWidget):
             fallback.setAlignment(Qt.AlignCenter)
             root.addWidget(fallback, stretch=1)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
     @staticmethod
     def _make_chart_view(title: str) -> "QChartView":
         """Create a QChartView with an empty titled chart."""
@@ -274,9 +265,6 @@ class AnalyticsPanel(QWidget):
         if hasattr(self._mw, "log"):
             self._mw.log(msg)
 
-    # ------------------------------------------------------------------
-    # Date range quick buttons
-    # ------------------------------------------------------------------
     @Slot()
     def _all_time(self) -> None:
         self._use_all_time = True
@@ -300,9 +288,6 @@ class AnalyticsPanel(QWidget):
         self._to_edit.setDate(end)
         self.refresh()
 
-    # ------------------------------------------------------------------
-    # Refresh / redraw
-    # ------------------------------------------------------------------
     @Slot()
     def refresh(self) -> None:
         """Recompute analytics data and repaint all charts."""
@@ -321,7 +306,9 @@ class AnalyticsPanel(QWidget):
         except Exception:
             self._log("Analytics: could not read prompt database.")
 
-        self._cache = compute_analytics_data(prompts, start_date, end_date)
+        self._cache = compute_analytics_data(
+            prompts, start_date, end_date,
+            db=getattr(self._mw, "prompt_database", None))
         self._update_stats()
         if _CHARTS_AVAILABLE:
             self._draw_bar_chart()
@@ -329,9 +316,6 @@ class AnalyticsPanel(QWidget):
             self._draw_line_chart()
             self._draw_timeline()
 
-    # ------------------------------------------------------------------
-    # Summary stats
-    # ------------------------------------------------------------------
     def _update_stats(self) -> None:
         d = self._cache
         if d is None:
@@ -341,9 +325,6 @@ class AnalyticsPanel(QWidget):
         self._card_llms.set_value(d["unique_llms"])
         self._card_days.set_value(d["active_days"])
 
-    # ------------------------------------------------------------------
-    # Bar chart – Prompts per Day
-    # ------------------------------------------------------------------
     def _draw_bar_chart(self) -> None:
         data = self._cache["prompts_by_date"]  # [(date_str, count), ...]
         chart = QChart()
@@ -382,9 +363,6 @@ class AnalyticsPanel(QWidget):
         self._style_chart(chart)
         self._cv_bar.setChart(chart)
 
-    # ------------------------------------------------------------------
-    # Pie chart – LLM Distribution
-    # ------------------------------------------------------------------
     def _draw_pie_chart(self) -> None:
         data = self._cache["llm_distribution"]  # [(name, count), ...]
         chart = QChart()
@@ -410,9 +388,6 @@ class AnalyticsPanel(QWidget):
         self._style_chart(chart)
         self._cv_pie.setChart(chart)
 
-    # ------------------------------------------------------------------
-    # Line chart – Token Usage Over Time
-    # ------------------------------------------------------------------
     def _draw_line_chart(self) -> None:
         data = self._cache["tokens_by_date"]  # [(date_str, tokens), ...]
         chart = QChart()
@@ -465,9 +440,6 @@ class AnalyticsPanel(QWidget):
         self._style_chart(chart)
         self._cv_line.setChart(chart)
 
-    # ------------------------------------------------------------------
-    # Timeline – Activity events as scatter + line
-    # ------------------------------------------------------------------
     def _draw_timeline(self) -> None:
         events = self._cache["timeline_events"]
         chart = QChart()

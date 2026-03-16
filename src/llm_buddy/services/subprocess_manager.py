@@ -17,9 +17,6 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-# --------------------------------------------------------------------------
-# Port helpers
-# --------------------------------------------------------------------------
 
 def is_port_in_use(port: int) -> bool:
     """Return *True* if something is listening on *port*."""
@@ -30,9 +27,6 @@ def is_port_in_use(port: int) -> bool:
         return False
 
 
-# --------------------------------------------------------------------------
-# Flask extension server
-# --------------------------------------------------------------------------
 
 def build_flask_server_command() -> list:
     """Return the command list to start the Flask API server."""
@@ -50,9 +44,6 @@ def check_extension_server(url: str = "http://localhost:5000") -> bool:
         return False
 
 
-# --------------------------------------------------------------------------
-# Proxy recorder (mitmdump)
-# --------------------------------------------------------------------------
 
 def find_mitmdump_exe() -> str:
     """Locate the mitmdump executable in the same dir as the Python interpreter."""
@@ -98,9 +89,6 @@ def kill_proxy_processes() -> None:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-# --------------------------------------------------------------------------
-# Windows system proxy (registry)
-# --------------------------------------------------------------------------
 
 def enable_system_proxy() -> None:
     """Enable the Windows system proxy (127.0.0.1:8080).
@@ -178,9 +166,6 @@ def ensure_proxy_disabled() -> None:
         pass
 
 
-# --------------------------------------------------------------------------
-# Certificate installation
-# --------------------------------------------------------------------------
 
 def get_mitmproxy_cert_path() -> Path:
     """Return the expected path to the mitmproxy CA certificate."""

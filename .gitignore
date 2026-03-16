@@ -10,8 +10,9 @@ __pycache__/
 *.egg-info/
 
 # Runtime data
-prompts.db
-prompts.json
+llm_buddy.db
+prompts.db.migrated
+prompts.json.migrated
 claude_prompts.json
 
 # Logs
@@ -23,17 +24,19 @@ LLM Buddy.bat
 # Backups created by the app
 backup/
 
-# eADR notes (user data)
+# Legacy data files (renamed to *.migrated by migration)
 eadr_notes.json
+eadr_notes.json.migrated
+sessions.json
+sessions.json.migrated
+conversation_trees.json
+conversation_trees.json.migrated
 
 # Profiles (user data)
 profiles.json
 
 # Auto-backup settings (user data)
 auto_backup_settings.json
-
-# Research sessions (user data)
-sessions.json
 
 # Claude Code project settings
 .claude/
@@ -47,6 +50,10 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# PyInstaller build artifacts
+build/
+dist/
 
 # Original artifact (large, not needed for distribution)
 Artifacts/

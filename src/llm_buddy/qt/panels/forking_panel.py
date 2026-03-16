@@ -1,49 +1,41 @@
 """
-Prompt Explorer panel — Visually-driven, automated conversational forking.
+Prompt Explorer panel — Prompt-centric conversational forking visualization.
 
-Treats LLM conversations as version-controlled, branchable structures.
-Automatically syncs with the prompt database to build trees, and provides 
-an interactive, draggable node map for branching and integration.
+Each individual prompt is a node in the tree graph. Selecting a node shows
+its full text and LLM response in the sidebar. New prompts are automatically
+added to the checked-out branch; forking creates diverging paths from a
+shared ancestor prompt.
 
-Improvements over v3.0:
-  #1  Merge workflow — merge one branch into another
-  #2  Rich fork dialog — capture trigger, reason, context at fork time
-  #3  Fork at specific prompt index — right-click a prompt to fork there
-  #4  Drag-and-drop prompt reordering & cross-branch moves
-  #5  Explicit branch checkout — "git checkout" for incoming prompts
-  #6  Search / filter across trees and branches
-  #7  Fork-point context shown in details panel
-  #8  Debounced position saves (no more per-drag full serialization)
-  #9  Soft-delete with show/hide abandoned toggle
-  #10 UX polish — dynamic node width, sortable headers, root styling
+Tree layout:
+  - Time flows top-to-bottom (workflow direction).
+  - Each branch occupies its own column.
+  - Fork edges (dashed) connect the fork-point prompt to the first unique
+    prompt of each child branch.
+  - Sequential edges (solid) connect consecutive prompts within a branch.
 """
 
-import math
 from datetime import datetime
-from PySide6.QtCore import Qt, Signal, Slot, QRectF, QPointF, QTimer, QMimeData
+from typing import List, Optional
+
+from PySide6.QtCore import Qt, Signal, Slot, QRectF, QPointF, QTimer
 from PySide6.QtGui import (
-    QBrush, QColor, QPen, QFont, QPainterPath, QPainter,
-    QAction, QTransform, QCursor, QKeySequence, QDrag
+    QBrush, QColor, QPen, QFont, QPainter, QPainterPath, QAction, QPalette,
 )
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, 
+    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
     QPushButton, QGraphicsView, QGraphicsScene, QGraphicsItem,
     QGraphicsPathItem, QMenu, QComboBox, QMessageBox,
-    QFormLayout, QTextEdit, QLineEdit, QTreeWidget, QTreeWidgetItem,
-    QInputDialog, QApplication, QDialog, QDialogButtonBox,
-    QCheckBox, QAbstractItemView, QHeaderView, QGroupBox
+    QFormLayout, QTextEdit, QLineEdit, QInputDialog, QApplication,
+    QDialog, QDialogButtonBox, QCheckBox, QGroupBox, QFrame,
 )
 
 from llm_buddy.core.forking import (
-    ConversationTree, Branch, ForkPoint, 
-    load_conversation_trees, save_conversation_trees,
-    auto_detect_trees, BRANCH_STATUSES, FORK_TRIGGERS
+    ConversationTree, Branch, ForkPoint,
+    auto_detect_trees, build_tree_with_forks, BRANCH_STATUSES, FORK_TRIGGERS,
 )
+from llm_buddy.qt.theme import get_theme_colors, current_theme_name
 
 
-# ==================================================================
-# Improvement #2: Rich Fork Dialog
-# ==================================================================
 
 class ForkDialog(QDialog):
     """Multi-field dialog for creating a fork with full metadata."""
@@ -55,9 +47,7 @@ class ForkDialog(QDialog):
         self.setMinimumWidth(420)
         layout = QVBoxLayout(self)
 
-        layout.addWidget(QLabel(
-            f"<b>Forking from:</b> {parent_branch_name}"
-        ))
+        layout.addWidget(QLabel(f"<b>Forking from:</b> {parent_branch_name}"))
 
         form = QFormLayout()
 
@@ -68,7 +58,6 @@ class ForkDialog(QDialog):
         self.combo_trigger = QComboBox()
         for val, label in FORK_TRIGGERS:
             self.combo_trigger.addItem(label, val)
-        # Default to "exploratory"
         for i, (val, _) in enumerate(FORK_TRIGGERS):
             if val == "exploratory":
                 self.combo_trigger.setCurrentIndex(i)
@@ -85,13 +74,10 @@ class ForkDialog(QDialog):
         self.edit_context.setMaximumHeight(80)
         form.addRow("Context:", self.edit_context)
 
-        # Fork index selector (#3)
         if prompt_count > 0:
             idx = default_index if 0 <= default_index < prompt_count else prompt_count - 1
-            self.spin_index_label = QLabel(
-                f"Fork after prompt <b>#{idx + 1}</b> of {prompt_count}")
-            form.addRow("Fork point:", self.spin_index_label)
             self._fork_index = idx
+            form.addRow("Fork after prompt:", QLabel(f"<b>#{idx + 1}</b> of {prompt_count}"))
         else:
             self._fork_index = 0
 
@@ -102,7 +88,6 @@ class ForkDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-
         self.edit_name.setFocus()
 
     @property
@@ -119,9 +104,6 @@ class ForkDialog(QDialog):
         }
 
 
-# ==================================================================
-# Improvement #1: Merge Dialog
-# ==================================================================
 
 class MergeDialog(QDialog):
     """Dialog to merge one branch into a chosen target."""
@@ -130,14 +112,11 @@ class MergeDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Merge Branch")
         self.setMinimumWidth(420)
-        self._source = source_branch
-        self._tree = tree
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
             f"<b>Merge source:</b> {source_branch.name}  "
-            f"({len(source_branch.prompt_ids)} prompts)"
-        ))
+            f"({len(source_branch.prompt_ids)} prompts)"))
 
         form = QFormLayout()
         self.combo_target = QComboBox()
@@ -173,395 +152,457 @@ class MergeDialog(QDialog):
         }
 
 
-# ------------------------------------------------------------------
-# Visual Graph Components
-# ------------------------------------------------------------------
+# One color per branch (cycles if > 10 branches)
+BRANCH_PALETTE = [
+    QColor("#1565C0"),  # Deep Blue
+    QColor("#2E7D32"),  # Deep Green
+    QColor("#B71C1C"),  # Deep Red
+    QColor("#6A1B9A"),  # Deep Purple
+    QColor("#E65100"),  # Deep Orange
+    QColor("#00695C"),  # Deep Teal
+    QColor("#AD1457"),  # Deep Pink
+    QColor("#4E342E"),  # Deep Brown
+    QColor("#37474F"),  # Blue Grey
+    QColor("#F9A825"),  # Amber (dark)
+]
 
-class EdgeItem(QGraphicsPathItem):
-    """Draws a smooth Bezier curve between two dynamic nodes."""
-    def __init__(self, src_node, dst_node):
+
+
+class PromptNodeItem(QGraphicsItem):
+    """A prompt displayed as a rounded card in the tree graph."""
+
+    NODE_W = 230
+    NODE_H = 95
+
+    def __init__(self, prompt, branch: Branch, color: QColor,
+                 is_fork_point: bool, panel):
         super().__init__()
-        self.src_node = src_node
-        self.dst_node = dst_node
-        self.setZValue(-1)
-        self.setPen(QPen(QColor("#888888"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        self.update_path()
-
-    def update_path(self):
-        direction = "horizontal"
-        if hasattr(self.src_node, "panel") and hasattr(self.src_node.panel, "_graph_view"):
-            direction = getattr(self.src_node.panel._graph_view, "layout_direction", "horizontal")
-        
-        if direction == "horizontal":
-            start = self.src_node.scenePos() + QPointF(self.src_node.width, self.src_node.height / 2)
-            end = self.dst_node.scenePos() + QPointF(0, self.dst_node.height / 2)
-            path = QPainterPath(start)
-            dx = end.x() - start.x()
-            cp_offset = max(dx * 0.5, 40)
-            cp1 = QPointF(start.x() + cp_offset, start.y())
-            cp2 = QPointF(end.x() - cp_offset, end.y())
-            path.cubicTo(cp1, cp2, end)
-        else:
-            start = self.src_node.scenePos() + QPointF(self.src_node.width / 2, self.src_node.height)
-            end = self.dst_node.scenePos() + QPointF(self.dst_node.width / 2, 0)
-            path = QPainterPath(start)
-            dy = end.y() - start.y()
-            cp_offset = max(dy * 0.5, 40)
-            cp1 = QPointF(start.x(), start.y() + cp_offset)
-            cp2 = QPointF(end.x(), end.y() - cp_offset)
-            path.cubicTo(cp1, cp2, end)
-            
-        self.setPath(path)
-
-
-class NodeItem(QGraphicsItem):
-    """Interactive, draggable visual node representing a conversation branch.
-
-    Improvement #10: dynamic width based on name length, distinct root styling,
-                     checkout indicator badge.
-    """
-    # --- #10: Dynamic width ---
-    MIN_WIDTH = 180
-    MAX_WIDTH = 300
-    HEIGHT = 70
-    CHAR_WIDTH = 8  # approximate px per character for sizing
-
-    def __init__(self, branch: Branch, tree: ConversationTree, panel):
-        super().__init__()
+        self.prompt = prompt
         self.branch = branch
-        self.tree = tree
+        self.color = color
+        self.is_fork_point = is_fork_point
         self.panel = panel
-
-        # --- #10: Compute dynamic width ---
-        name_len = len(branch.name) * self.CHAR_WIDTH + 50
-        self.width = max(self.MIN_WIDTH, min(name_len, self.MAX_WIDTH))
-        self.height = self.HEIGHT
-
-        self._is_root = (branch.parent_branch_id is None)
-        self._is_checked_out = (tree.checked_out_branch_id == branch.id)
-        
-        self.setAcceptHoverEvents(True)
-        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
-        self.setFlag(QGraphicsItem.ItemIsMovable, True)
-        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
-        
+        self._edges: list = []
         self.is_hovered = False
-        self._edges = []
-        self._drag_start_pos = QPointF()
 
-    def add_edge(self, edge: EdgeItem):
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+        self.setAcceptHoverEvents(True)
+
+    def add_edge(self, edge) -> None:
         self._edges.append(edge)
 
-    def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemPositionHasChanged:
-            for edge in self._edges:
-                edge.update_path()
-        return super().itemChange(change, value)
-
-    def mousePressEvent(self, event):
-        super().mousePressEvent(event)
-        self.panel._is_dragging_node = True
-        self._drag_start_pos = event.scenePos()
-
-    def mouseReleaseEvent(self, event):
-        super().mouseReleaseEvent(event)
-        self.panel._is_dragging_node = False
-        
-        self.tree.updated_at = datetime.now()
-        # --- #8: Debounced position save instead of immediate ---
-        self.panel._queue_position_save(self.tree.id, self.branch.id, self.scenePos())
-        
-        delta = event.scenePos() - self._drag_start_pos
-        length = abs(delta.x()) + abs(delta.y())
-        if length < 5:
-            self.panel.select_branch(self.branch.id)
-
     def boundingRect(self) -> QRectF:
-        return QRectF(0, 0, self.width, self.height)
+        return QRectF(0, 0, self.NODE_W, self.NODE_H)
 
-    def paint(self, painter: QPainter, option, widget=None):
+    def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        colors = {
-            "active": QColor("#2196F3"),
-            "completed": QColor("#4CAF50"),
-            "abandoned": QColor("#9E9E9E"),
-            "merged": QColor("#FF9800"),
-        }
-        base_color = colors.get(self.branch.status, QColor("#9E9E9E"))
+        rect = QRectF(0, 0, self.NODE_W, self.NODE_H)
 
-        # --- #9: Dim hidden/soft-deleted nodes ---
-        if self.branch.hidden:
-            base_color = QColor("#CCCCCC")
-        
         if self.isSelected():
-            painter.setPen(QPen(base_color, 3))
-            bg_color = base_color.lighter(180)
+            bg = self.color.lighter(190)
+            border_pen = QPen(self.color, 3)
         elif self.is_hovered:
-            painter.setPen(QPen(base_color, 2))
-            bg_color = base_color.lighter(190)
+            bg = self.color.lighter(200)
+            border_pen = QPen(self.color, 2)
         else:
-            painter.setPen(QPen(base_color.darker(120), 1))
-            bg_color = QColor("#ffffff")
+            bg = QApplication.palette().color(QPalette.Base)
+            border_pen = QPen(self.color.darker(110), 1.5)
 
-        # --- #10: Distinct root styling — double border ---
-        if self._is_root:
-            painter.setPen(QPen(base_color, 3, Qt.PenStyle.SolidLine))
+        painter.setPen(border_pen)
+        painter.setBrush(QBrush(bg))
+        painter.drawRoundedRect(rect, 7, 7)
 
-        painter.setBrush(QBrush(bg_color))
-        painter.drawRoundedRect(self.boundingRect(), 8, 8)
+        if self.is_fork_point:
+            painter.setPen(QPen(self.color, 1.5, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(-5, -5, 5, 5), 10, 10)
 
-        # --- #10: Root badge ---
-        if self._is_root:
-            painter.setBrush(QBrush(base_color.darker(110)))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(QRectF(4, 4, 16, 16), 3, 3)
-            painter.setPen(QColor("#ffffff"))
-            painter.setFont(QFont("Segoe UI", 7, QFont.Bold))
-            painter.drawText(QRectF(4, 4, 16, 16), Qt.AlignmentFlag.AlignCenter, "R")
-        
-        # Status indicator dot
-        painter.setBrush(QBrush(base_color))
         painter.setPen(Qt.PenStyle.NoPen)
-        if not self._is_root:
-            painter.drawEllipse(10, 10, 10, 10)
+        painter.setBrush(QBrush(self.color))
+        painter.drawRoundedRect(QRectF(0, 0, 6, self.NODE_H), 3, 3)
+        painter.drawRect(QRectF(3, 0, 3, self.NODE_H))   # square off right edge
 
-        # --- #5: Checkout indicator ---
-        if self._is_checked_out:
-            painter.setBrush(QBrush(QColor("#00C853")))
-            painter.drawEllipse(int(self.width - 20), 6, 12, 12)
-            painter.setPen(QColor("#ffffff"))
-            painter.setFont(QFont("Segoe UI", 7, QFont.Bold))
-            painter.drawText(QRectF(self.width - 20, 6, 12, 12),
-                             Qt.AlignmentFlag.AlignCenter, "✓")
+        ts = self.prompt.timestamp.strftime("%m/%d %H:%M") if self.prompt.timestamp else ""
+        llm = (self.prompt.llm_used or "")[:16]
+        painter.setPen(QApplication.palette().color(QPalette.PlaceholderText))
+        painter.setFont(QFont("Segoe UI", 7))
+        painter.drawText(QRectF(13, 5, self.NODE_W - 17, 14),
+                         Qt.AlignmentFlag.AlignLeft,
+                         f"{ts}  ·  {llm}")
 
-        # Branch name — #10: use full width, smarter truncation
-        painter.setPen(QColor("#333333"))
-        font = QFont("Segoe UI", 10, QFont.Bold)
-        painter.setFont(font)
-        
-        max_chars = int((self.width - 40) / self.CHAR_WIDTH)
-        display_name = self.branch.name
-        if len(display_name) > max_chars:
-            display_name = display_name[:max_chars - 1] + "…"
-            
-        painter.drawText(28, 20, display_name)
-        
-        font.setBold(False)
-        font.setPointSize(8)
-        painter.setFont(font)
-        painter.setPen(QColor("#666666"))
-        painter.drawText(12, 45, f"Prompts: {len(self.branch.prompt_ids)}")
-        
-        if self.branch.fork_point_id:
-            fp = self.tree.get_fork_point(self.branch.fork_point_id)
-            if fp:
-                painter.drawText(12, 60, f"Trigger: {fp.trigger.capitalize()}")
+        text = (self.prompt.prompt_text or self.prompt.description or "(no text)")
+        painter.setPen(QApplication.palette().color(QPalette.Text))
+        painter.setFont(QFont("Segoe UI", 8))
+        painter.drawText(
+            QRectF(13, 22, self.NODE_W - 17, 55),
+            Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap,
+            text[:200],
+        )
 
-    def hoverEnterEvent(self, event):
+        if self.prompt.response_text:
+            painter.setPen(Qt.PenStyle.NoPen)
+            dot_color = QColor(get_theme_colors(current_theme_name())["success"])
+            painter.setBrush(QBrush(dot_color))
+            painter.drawEllipse(
+                QRectF(self.NODE_W - 14, self.NODE_H - 14, 8, 8))
+
+    def hoverEnterEvent(self, event) -> None:
         self.is_hovered = True
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update()
 
-    def hoverLeaveEvent(self, event):
+    def hoverLeaveEvent(self, event) -> None:
         self.is_hovered = False
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
 
-    def contextMenuEvent(self, event):
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.panel.select_prompt(self.prompt.id, self.branch.id)
+
+    def contextMenuEvent(self, event) -> None:
         menu = QMenu()
-        
-        # --- #5: Checkout action ---
-        checkout_act = QAction("⬤ Checkout (receive new prompts)", menu)
-        checkout_act.triggered.connect(lambda: self.panel._checkout_branch(self.tree, self.branch))
-        if self._is_checked_out:
-            checkout_act.setEnabled(False)
-            checkout_act.setText("⬤ Checked out (current)")
-        menu.addAction(checkout_act)
+
+        act_fork = QAction("Fork from here…", menu)
+        act_fork.triggered.connect(
+            lambda: self.panel._fork_from_prompt(self.branch, self.prompt.id))
+        menu.addAction(act_fork)
+
+        tree = self.panel._active_tree
+        act_checkout = QAction("Checkout this branch", menu)
+        act_checkout.triggered.connect(
+            lambda: self.panel._checkout_branch(tree, self.branch))
+        if tree and tree.checked_out_branch_id == self.branch.id:
+            act_checkout.setEnabled(False)
+            act_checkout.setText("✓ Already checked out")
+        menu.addAction(act_checkout)
+
         menu.addSeparator()
 
-        fork_act = QAction("🌱 Fork from here…", menu)
-        fork_act.triggered.connect(lambda: self.panel._prompt_fork_creation(self.branch))
-        menu.addAction(fork_act)
+        act_copy = QAction("Copy prompt text", menu)
+        act_copy.triggered.connect(
+            lambda: QApplication.clipboard().setText(self.prompt.prompt_text or ""))
+        menu.addAction(act_copy)
 
-        # --- #1: Merge action ---
-        merge_act = QAction("🔀 Merge into…", menu)
-        merge_act.triggered.connect(lambda: self.panel._prompt_merge(self.branch))
-        if len(self.tree.get_visible_branches()) < 2:
-            merge_act.setEnabled(False)
-        menu.addAction(merge_act)
-        
-        eadr_act = QAction("📝 Add eADR Note", menu)
-        eadr_act.triggered.connect(lambda: self.panel._trigger_eadr_note(self.tree, self.branch))
-        menu.addAction(eadr_act)
-        
-        menu.addSeparator()
+        act_copy_r = QAction("Copy response text", menu)
+        act_copy_r.setEnabled(bool(self.prompt.response_text))
+        act_copy_r.triggered.connect(
+            lambda: QApplication.clipboard().setText(self.prompt.response_text or ""))
+        menu.addAction(act_copy_r)
 
-        # --- #9: Soft-delete vs hard delete ---
-        if not self.branch.hidden:
-            hide_act = QAction("🫥 Archive Branch (soft delete)", menu)
-            hide_act.triggered.connect(lambda: self.panel._soft_delete_branch(self.branch))
-            if self.branch.parent_branch_id is None:
-                hide_act.setEnabled(False)
-            menu.addAction(hide_act)
-        else:
-            restore_act = QAction("♻️ Restore Branch", menu)
-            restore_act.triggered.connect(lambda: self.panel._restore_branch(self.branch))
-            menu.addAction(restore_act)
-
-        delete_act = QAction("❌ Permanently Delete", menu)
-        delete_act.triggered.connect(lambda: self.panel._delete_branch(self.branch))
-        if self.branch.parent_branch_id is None:
-            delete_act.setEnabled(False) 
-        menu.addAction(delete_act)
-            
         menu.exec(event.screenPos())
 
 
-# ------------------------------------------------------------------
-# Interactive Graph View
-# ------------------------------------------------------------------
+
+class EdgeItem(QGraphicsPathItem):
+    """Smooth cubic Bezier connecting two PromptNodeItems top-to-bottom."""
+
+    def __init__(self, src: PromptNodeItem, dst: PromptNodeItem,
+                 color: QColor, dashed: bool = False):
+        super().__init__()
+        self.src = src
+        self.dst = dst
+        self.setZValue(-1)
+        style = Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine
+        width = 1.8 if dashed else 1.5
+        self.setPen(QPen(color, width, style,
+                         Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        self._update_path()
+
+    def _update_path(self) -> None:
+        w = self.src.NODE_W
+        h = self.src.NODE_H
+        start = self.src.scenePos() + QPointF(w / 2, h)
+        end   = self.dst.scenePos() + QPointF(self.dst.NODE_W / 2, 0)
+
+        path = QPainterPath(start)
+        dy = end.y() - start.y()
+        dx = abs(end.x() - start.x())
+        # Vertical pull proportional to both dy and horizontal distance
+        pull = max(abs(dy) * 0.45, dx * 0.3, 30)
+        cp1 = QPointF(start.x(), start.y() + pull)
+        cp2 = QPointF(end.x(),   end.y()   - pull)
+        path.cubicTo(cp1, cp2, end)
+        self.setPath(path)
+
+
+
+class BranchLabelItem(QGraphicsItem):
+    W, H = 180, 26
+
+    def __init__(self, branch: Branch, color: QColor):
+        super().__init__()
+        self.branch = branch
+        self.color = color
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, self.W, self.H)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(self.color.lighter(175)))
+        painter.drawRoundedRect(self.boundingRect(), 5, 5)
+        painter.setPen(self.color.darker(140))
+        font = QFont("Segoe UI", 8, QFont.Weight.Bold)
+        painter.setFont(font)
+        name = self.branch.name
+        if len(name) > 22:
+            name = name[:20] + "…"
+        painter.drawText(self.boundingRect(), Qt.AlignmentFlag.AlignCenter, name)
+
+
 
 class TreeGraphView(QGraphicsView):
-    """Draggable, zoomable canvas for the conversation tree."""
+    """Zoomable, pannable canvas that draws individual prompts as nodes."""
+
+    # Layout constants
+    NODE_W  = PromptNodeItem.NODE_W
+    NODE_H  = PromptNodeItem.NODE_H
+    H_GAP   = 60    # horizontal gap between branch columns
+    V_GAP   = 28    # vertical gap between sequential prompts
+    TOP_PAD = 48    # vertical padding above first row (room for branch labels)
+
+    COL_STEP = NODE_W + H_GAP
+    ROW_STEP = NODE_H + V_GAP
+
     def __init__(self, panel):
         super().__init__()
         self.panel = panel
-        self.layout_direction = "vertical"
-        self.scene = QGraphicsScene(self)
-        self.setScene(self.scene)
-        
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
-        self.setBackgroundBrush(QBrush(QColor("#f4f6f9")))
-        
+        self.setBackgroundBrush(
+            QBrush(QApplication.palette().color(QPalette.Window)))
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self._is_panning = False
-        self._pan_start_pos = QPointF()
-        self._node_items = {} 
+        self._pan_start = QPointF()
+        self._prompt_items: dict = {}   # prompt_id -> PromptNodeItem
 
-    def draw_tree(self, tree: ConversationTree, preserve_viewport: bool = False,
-                  show_hidden: bool = False, search_term: str = ""):
-        """Rebuild the visual graph for *tree*.
+    @Slot(str)
+    def update_theme(self, _name: str = "") -> None:
+        """Re-apply the scene background and repaint all nodes for the new theme."""
+        self.setBackgroundBrush(
+            QBrush(QApplication.palette().color(QPalette.Window)))
+        self._scene.update()
 
-        If *preserve_viewport* is True the current scene-rect is kept so
-        that the caller can restore the viewport position afterwards
-        without the coordinate space shifting underneath it.
-        """
-        old_scene_rect = self.sceneRect() if preserve_viewport else None
 
-        self.scene.clear()
-        self._node_items.clear()
-        if not tree or not tree.branches:
+    def draw_prompt_tree(self, tree: ConversationTree, db,
+                         show_hidden: bool = False,
+                         search_term: str = "") -> None:
+        """Rebuild the visual graph for *tree*."""
+        self._scene.clear()
+        self._prompt_items.clear()
+
+        if not tree or not db:
             return
 
-        if getattr(tree, "layout_positions", None) is None:
-            tree.layout_positions = {}
-
         visible = tree.get_visible_branches(show_hidden=show_hidden)
-        visible_ids = {b.id for b in visible}
+        if not visible:
+            return
 
-        # --- #6: Highlight matches ---
-        search_lower = search_term.strip().lower() if search_term else ""
+        color_map: dict = {}
+        for i, b in enumerate(tree.branches):
+            color_map[b.id] = BRANCH_PALETTE[i % len(BRANCH_PALETTE)]
 
-        node_positions = {}
-        y_counter = [0]
+        col_map, start_row_map = self._compute_layout(tree, visible)
 
-        def calc_positions(branch_id: str, depth: int) -> QPointF:
-            children = [b for b in tree.get_child_branches(branch_id) if b.id in visible_ids]
-            if not children:
-                if self.layout_direction == "horizontal":
-                    pos = QPointF(depth * 250, y_counter[0] * 120)
-                else:
-                    pos = QPointF(y_counter[0] * 220, depth * 150)
-                y_counter[0] += 1
-                node_positions[branch_id] = pos
-                return pos
-
-            child_y_sum = 0.0
-            child_x_sum = 0.0
-            for child in children:
-                child_pos = calc_positions(child.id, depth + 1)
-                child_y_sum += child_pos.y()
-                child_x_sum += child_pos.x()
-                
-            if self.layout_direction == "horizontal":
-                pos = QPointF(depth * 250, child_y_sum / max(len(children), 1))
-            else:
-                pos = QPointF(child_x_sum / max(len(children), 1), depth * 150)
-                
-            node_positions[branch_id] = pos
-            return pos
-
+        # Build Y positions based on tree structure, not timestamps.
+        # Each branch's unique prompts start at the row after the fork point.
+        # This ensures forked prompts appear next to where they diverged.
+        pid_to_y: dict = {}
+        # First: assign rows to root branch prompts (sequential from row 0)
         root_branch = tree.get_root_branch()
-        if root_branch and root_branch.id in visible_ids:
-            calc_positions(root_branch.id, 0)
+        if root_branch and root_branch.id in {b.id for b in visible}:
+            for i, pid in enumerate(root_branch.prompt_ids):
+                pid_to_y[pid] = i * self.ROW_STEP + self.TOP_PAD
+
+        # Then: assign rows to child branches starting from their fork point
+        def _assign_branch_rows(branch):
+            if branch.parent_branch_id is None:
+                return  # root already assigned
+            fp = tree.get_fork_point(branch.fork_point_id) if branch.fork_point_id else None
+            uids = self.unique_prompt_ids(tree, branch)
+            # Start row: one row after the fork point in the parent
+            start_row = start_row_map.get(branch.id, 0)
+            for i, pid in enumerate(uids):
+                pid_to_y[pid] = (start_row + i) * self.ROW_STEP + self.TOP_PAD
+            # Recurse into children of this branch
+            for child in tree.get_child_branches(branch.id):
+                if child.id in {b.id for b in visible}:
+                    _assign_branch_rows(child)
+
+        if root_branch:
+            for child in tree.get_child_branches(root_branch.id):
+                if child.id in {b.id for b in visible}:
+                    _assign_branch_rows(child)
+
+        fork_prompt_ids = {fp.prompt_id for fp in tree.fork_points if fp.prompt_id}
+
+        search_lower = search_term.strip().lower()
 
         for branch in visible:
-            node = NodeItem(branch, tree, self.panel)
-            
-            if branch.id in tree.layout_positions:
-                px, py = tree.layout_positions[branch.id]
-                node.setPos(QPointF(px, py))
-            else:
-                node.setPos(node_positions.get(branch.id, QPointF(0, 0)))
+            col      = col_map.get(branch.id, 0)
+            start_r  = start_row_map.get(branch.id, 0)
+            uids     = self.unique_prompt_ids(tree, branch)
+            color    = color_map.get(branch.id, BRANCH_PALETTE[0])
+            x        = col * self.COL_STEP
 
-            # --- #6: Dim non-matching nodes during search ---
-            if search_lower and search_lower not in branch.name.lower():
-                node.setOpacity(0.35)
+            if not uids:
+                continue
 
-            self.scene.addItem(node)
-            self._node_items[branch.id] = node
+            # branch column label — anchored to the first prompt's temporal Y
+            label = BranchLabelItem(branch, color)
+            first_y = pid_to_y.get(uids[0], start_r * self.ROW_STEP + self.TOP_PAD)
+            label.setPos(QPointF(
+                x + (self.NODE_W - label.W) / 2,
+                first_y - label.H - 6,
+            ))
+            self._scene.addItem(label)
+
+            prev_item: Optional[PromptNodeItem] = None
+            for i, pid in enumerate(uids):
+                p = db.get_prompt(pid)
+                if p is None:
+                    continue
+
+                y = pid_to_y.get(pid, (start_r + i) * self.ROW_STEP + self.TOP_PAD)
+                node = PromptNodeItem(p, branch, color, pid in fork_prompt_ids, self.panel)
+                node.setPos(QPointF(x, y))
+
+                if search_lower and \
+                        search_lower not in (p.prompt_text or "").lower() and \
+                        search_lower not in (p.description or "").lower():
+                    node.setOpacity(0.3)
+
+                self._scene.addItem(node)
+                self._prompt_items[pid] = node
+
+                if prev_item is not None:
+                    edge = EdgeItem(prev_item, node, color, dashed=False)
+                    self._scene.addItem(edge)
+
+                prev_item = node
 
         for branch in visible:
-            if branch.parent_branch_id and branch.parent_branch_id in self._node_items:
-                src_node = self._node_items[branch.parent_branch_id]
-                dst_node = self._node_items[branch.id]
-                
-                edge = EdgeItem(src_node, dst_node)
-                self.scene.addItem(edge)
-                
-                src_node.add_edge(edge)
-                dst_node.add_edge(edge)
+            if branch.parent_branch_id is None:
+                continue
+            fp = tree.get_fork_point(branch.fork_point_id) if branch.fork_point_id else None
+            if fp is None:
+                continue
 
-        if old_scene_rect is not None and old_scene_rect.isValid():
-            new_items_rect = self.scene.itemsBoundingRect().adjusted(-200, -200, 200, 200)
-            self.scene.setSceneRect(old_scene_rect.united(new_items_rect))
-        else:
-            self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-200, -200, 200, 200))
+            parent = tree.get_branch(branch.parent_branch_id)
+            if parent is None:
+                continue
 
-    def select_node(self, branch_id: str, center_view: bool = True):
-        for item in self.scene.selectedItems():
+            # The prompt in the parent branch AT the fork index
+            if 0 <= fp.fork_index < len(parent.prompt_ids):
+                parent_pid  = parent.prompt_ids[fp.fork_index]
+                parent_node = self._prompt_items.get(parent_pid)
+
+                uids = self.unique_prompt_ids(tree, branch)
+                if uids:
+                    child_node = self._prompt_items.get(uids[0])
+                    if parent_node and child_node:
+                        color = color_map.get(branch.id, QColor("#888888"))
+                        edge = EdgeItem(parent_node, child_node, color, dashed=True)
+                        self._scene.addItem(edge)
+
+        rect = self._scene.itemsBoundingRect()
+        self._scene.setSceneRect(rect.adjusted(-80, -80, 80, 80))
+
+    def select_node(self, prompt_id: str, center: bool = True) -> None:
+        for item in self._scene.selectedItems():
             item.setSelected(False)
-        node = self._node_items.get(branch_id)
+        node = self._prompt_items.get(prompt_id)
         if node:
             node.setSelected(True)
-            if center_view:
+            if center:
                 self.centerOn(node)
 
-    def keyPressEvent(self, event):
+
+    @staticmethod
+    def unique_prompt_ids(tree: ConversationTree, branch: Branch) -> List[str]:
+        """Return prompt IDs that are unique to *branch* (not inherited from parent)."""
+        if branch.parent_branch_id is None:
+            return list(branch.prompt_ids)
+        fp = tree.get_fork_point(branch.fork_point_id) if branch.fork_point_id else None
+        if fp is None:
+            return list(branch.prompt_ids)
+        return list(branch.prompt_ids[fp.fork_index + 1:])
+
+    def _compute_layout(self, tree: ConversationTree,
+                        visible: List[Branch]) -> tuple:
+        """
+        Compute column and start_row for each branch (git-style layout).
+
+        Every branch gets its own column so that prompts never overlap.
+        Root is always column 0; child branches get columns 1, 2, …
+        in DFS order.
+
+        Start row: root starts at 0; a child branch's unique prompts begin
+        at (parent_start_row + fork_index + 1).
+        """
+        visible_ids = {b.id for b in visible}
+        col_map: dict  = {}
+        row_map: dict  = {}
+        col_ctr = [0]
+
+        def _start_row(branch: Branch) -> int:
+            if branch.parent_branch_id is None:
+                return 0
+            parent = tree.get_branch(branch.parent_branch_id)
+            if parent is None:
+                return 0
+            fp = tree.get_fork_point(branch.fork_point_id) if branch.fork_point_id else None
+            idx = fp.fork_index if fp else max(0, len(parent.prompt_ids) - 1)
+            return row_map.get(branch.parent_branch_id, 0) + idx + 1
+
+        def dfs(bid: str) -> None:
+            if bid not in visible_ids:
+                return
+            branch = tree.get_branch(bid)
+            if branch is None:
+                return
+
+            row_map[bid] = _start_row(branch)
+            # Each branch gets its own column (git-style, no overlap)
+            col_map[bid] = float(col_ctr[0])
+            col_ctr[0] += 1
+
+            for child in tree.get_child_branches(bid):
+                if child.id in visible_ids:
+                    dfs(child.id)
+
+        root = tree.get_root_branch()
+        if root and root.id in visible_ids:
+            dfs(root.id)
+
+        return col_map, row_map
+
+
+    def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_F:
             self.panel._fit_to_view()
-        elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            if self.panel._active_branch:
-                self.panel._soft_delete_branch(self.panel._active_branch)
         else:
             super().keyPressEvent(event)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event) -> None:
         self.setFocus()
         if event.button() == Qt.MouseButton.MiddleButton:
             self._is_panning = True
-            self._pan_start_pos = event.pos()
+            self._pan_start = event.pos()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
         super().mousePressEvent(event)
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
             self._is_panning = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -569,771 +610,525 @@ class TreeGraphView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event) -> None:
         if self._is_panning:
-            delta = event.pos() - self._pan_start_pos
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
-            self._pan_start_pos = event.pos()
+            delta = event.pos() - self._pan_start
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() - delta.y())
+            self._pan_start = event.pos()
             event.accept()
             return
         super().mouseMoveEvent(event)
 
-    def wheelEvent(self, event):
-        zoom_in_factor = 1.15
-        zoom_out_factor = 1 / zoom_in_factor
-        current_scale = self.transform().m11()
-        
-        if event.angleDelta().y() > 0:
-            if current_scale < 3.0:
-                self.scale(zoom_in_factor, zoom_in_factor)
-        else:
-            if current_scale > 0.3:
-                self.scale(zoom_out_factor, zoom_out_factor)
+    def wheelEvent(self, event) -> None:
+        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        current = self.transform().m11()
+        if (factor > 1 and current < 3.5) or (factor < 1 and current > 0.15):
+            self.scale(factor, factor)
 
 
-# ------------------------------------------------------------------
-# Improvement #4: Drag-and-drop Prompt Tree
-# ------------------------------------------------------------------
-
-class PromptTreeWidget(QTreeWidget):
-    """QTreeWidget subclass with drag-and-drop for prompt reordering
-    and cross-branch moves via the panel."""
-
-    prompt_moved = Signal(str, int, int)       # prompt_id, old_row, new_row
-    prompt_dropped_external = Signal(str)       # prompt_id (dropped from outside)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setDragEnabled(True)
-        self.setAcceptDrops(True)
-        # --- #10: sortable headers ---
-        self.setSortingEnabled(True)
-
-    def dropEvent(self, event):
-        """Emit reorder signal after internal move."""
-        dragged_item = self.currentItem()
-        if not dragged_item:
-            super().dropEvent(event)
-            return
-
-        old_row = self.indexOfTopLevelItem(dragged_item)
-        super().dropEvent(event)
-        new_row = self.indexOfTopLevelItem(dragged_item)
-
-        pid = dragged_item.data(0, Qt.ItemDataRole.UserRole)
-        if pid and old_row != new_row and old_row >= 0 and new_row >= 0:
-            self.prompt_moved.emit(pid, old_row, new_row)
-
-
-# ------------------------------------------------------------------
-# Main Panel
-# ------------------------------------------------------------------
 
 class ForkingPanel(QWidget):
-    
-    branch_forked = Signal(str, str, str, str)
-    branch_merged = Signal(str, str, str)
+
+    branch_forked = Signal(str, str, str, str)   # tree, parent, child, trigger
+    branch_merged = Signal(str, str, str)         # tree, source, insights
 
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self._mw = main_window
-        self._trees: list[ConversationTree] = []
-        self._active_tree: ConversationTree | None = None
-        self._active_branch: Branch | None = None
-        
-        self._is_dragging_node = False
-
-        # --- #9: Show/hide hidden branches toggle state ---
+        self._trees: List[ConversationTree] = []
+        self._active_tree: Optional[ConversationTree] = None
+        self._active_prompt_id: Optional[str] = None
+        self._active_branch_id: Optional[str] = None
         self._show_hidden = False
-
-        # --- #6: Current search term ---
         self._search_term = ""
-        
-        # Auto-save timer (text edits)
-        self._save_timer = QTimer(self)
-        self._save_timer.setSingleShot(True)
-        self._save_timer.setInterval(400)
-        self._save_timer.timeout.connect(self._execute_save)
 
-        # --- #8: Debounced position save timer ---
-        self._pos_save_timer = QTimer(self)
-        self._pos_save_timer.setSingleShot(True)
-        self._pos_save_timer.setInterval(600)
-        self._pos_save_timer.timeout.connect(self._flush_position_saves)
-        self._pending_positions: dict[tuple, QPointF] = {}
-
-        # Periodic sync
+        # Periodic auto-sync timer
         self._sync_timer = QTimer(self)
-        self._sync_timer.setInterval(30000)
+        self._sync_timer.setInterval(30_000)
         self._sync_timer.timeout.connect(self.refresh)
-        
+
         self._build_ui()
         self.refresh()
         self._sync_timer.start()
+        QTimer.singleShot(0, self._init_splitter_sizes)
 
-    # ==============================================================
-    # UI Construction
-    # ==============================================================
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
 
-    def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 1. Instantiate the graph view FIRST
         self._graph_view = TreeGraphView(self)
-        
-        # --- Toolbar row 1: tree selector + main actions ---
-        toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(8, 8, 8, 4)
-        
-        toolbar.addWidget(QLabel("<b>Tree:</b>"))
-        self._tree_selector = QComboBox()
-        self._tree_selector.setMinimumWidth(260)
-        self._tree_selector.currentIndexChanged.connect(self._on_tree_changed)
-        toolbar.addWidget(self._tree_selector)
 
-        # --- #5: Checkout indicator label ---
+        tb1 = QHBoxLayout()
+        tb1.setContentsMargins(8, 8, 8, 4)
+
+        tb1.addWidget(QLabel("<b>Conversation:</b>"))
+        self._tree_selector = QComboBox()
+        self._tree_selector.setMinimumWidth(300)
+        self._tree_selector.currentIndexChanged.connect(self._on_tree_changed)
+        tb1.addWidget(self._tree_selector)
+
         self._lbl_checkout = QLabel("")
         self._lbl_checkout.setStyleSheet(
-            "color: #00C853; font-weight: bold; padding: 0 8px;")
-        toolbar.addWidget(self._lbl_checkout)
+            "color: #2E7D32; font-weight: bold; padding: 0 8px;")
+        tb1.addWidget(self._lbl_checkout)
 
-        toolbar.addStretch()
-        
-        btn_refresh = QPushButton("↻ Sync")
-        btn_refresh.setToolTip("Sync conversations from Prompt Database immediately")
-        btn_refresh.clicked.connect(self.refresh)
-        toolbar.addWidget(btn_refresh)
-        
-        btn_fit = QPushButton("⛶ Fit (F)")
+        tb1.addStretch()
+
+        btn_sync = QPushButton("↻ Sync")
+        btn_sync.setToolTip("Pull new prompts from the database now")
+        btn_sync.clicked.connect(self.refresh)
+        tb1.addWidget(btn_sync)
+
+        btn_fit = QPushButton("⛶ Fit  (F)")
         btn_fit.clicked.connect(self._fit_to_view)
-        toolbar.addWidget(btn_fit)
+        tb1.addWidget(btn_fit)
 
-        current_direction = getattr(self._graph_view, "layout_direction", "horizontal")
-        initial_text = "⬍ Vertical" if current_direction == "vertical" else "⬌ Horizontal"
-        self.btn_layout = QPushButton(initial_text) 
-        self.btn_layout.setToolTip("Switch between Horizontal and Vertical branching")
-        self.btn_layout.clicked.connect(self._toggle_layout)
-        toolbar.addWidget(self.btn_layout)
-        
-        layout.addLayout(toolbar)
+        root.addLayout(tb1)
 
-        # --- Toolbar row 2: search + toggles ---
-        toolbar2 = QHBoxLayout()
-        toolbar2.setContentsMargins(8, 0, 8, 8)
+        tb2 = QHBoxLayout()
+        tb2.setContentsMargins(8, 0, 8, 8)
 
-        # --- #6: Search bar ---
-        toolbar2.addWidget(QLabel("🔍"))
+        tb2.addWidget(QLabel("🔍"))
         self._search_box = QLineEdit()
-        self._search_box.setPlaceholderText("Filter branches by name…")
+        self._search_box.setPlaceholderText("Filter prompts by text…")
         self._search_box.setClearButtonEnabled(True)
         self._search_box.setMaximumWidth(280)
         self._search_box.textChanged.connect(self._on_search_changed)
-        toolbar2.addWidget(self._search_box)
+        tb2.addWidget(self._search_box)
 
-        # --- #9: Show hidden toggle ---
-        self._chk_show_hidden = QCheckBox("Show archived")
-        self._chk_show_hidden.setToolTip("Show soft-deleted / archived branches")
-        self._chk_show_hidden.toggled.connect(self._on_show_hidden_toggled)
-        toolbar2.addWidget(self._chk_show_hidden)
+        self._chk_hidden = QCheckBox("Show archived branches")
+        self._chk_hidden.setToolTip("Include soft-deleted branches")
+        self._chk_hidden.toggled.connect(self._on_show_hidden_toggled)
+        tb2.addWidget(self._chk_hidden)
 
-        toolbar2.addStretch()
-        layout.addLayout(toolbar2)
+        tb2.addStretch()
 
-        # --- Main splitter: graph | details ---
+        btn_fork = QPushButton("🌱 Fork from selection")
+        btn_fork.setToolTip("Create a new branch diverging from the selected prompt")
+        btn_fork.clicked.connect(self._fork_from_selection)
+        tb2.addWidget(btn_fork)
+
+        btn_merge = QPushButton("🔀 Merge branch")
+        btn_merge.setToolTip("Merge the selected prompt's branch into another")
+        btn_merge.clicked.connect(self._merge_from_selection)
+        tb2.addWidget(btn_merge)
+
+        root.addLayout(tb2)
+
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
-        layout.addWidget(self._splitter, stretch=1)
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.setHandleWidth(6)
+        root.addWidget(self._splitter, stretch=1)
 
         self._splitter.addWidget(self._graph_view)
 
-        details_widget = QWidget()
-        details_layout = QVBoxLayout(details_widget)
-        details_layout.setContentsMargins(16, 12, 16, 12)
-        
-        self._lbl_branch_title = QLabel("<h2>Select a node</h2>")
-        details_layout.addWidget(self._lbl_branch_title)
+        sidebar = QWidget()
+        sidebar.setMinimumWidth(360)
+        sl = QVBoxLayout(sidebar)
+        sl.setContentsMargins(12, 12, 12, 12)
+        sl.setSpacing(8)
 
-        # --- #7: Fork origin info ---
-        self._fork_origin_group = QGroupBox("Fork Origin")
-        fork_origin_layout = QFormLayout(self._fork_origin_group)
-        self._lbl_fork_parent = QLabel("—")
-        fork_origin_layout.addRow("Parent:", self._lbl_fork_parent)
+        # Context header
+        self._lbl_context = QLabel("<i>Select a prompt node to read its content</i>")
+        self._lbl_context.setWordWrap(True)
+        sl.addWidget(self._lbl_context)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        sl.addWidget(sep)
+
+        # Prompt text
+        sl.addWidget(QLabel("<b>Prompt:</b>"))
+        self._txt_prompt = QTextEdit()
+        self._txt_prompt.setReadOnly(True)
+        self._txt_prompt.setPlaceholderText("Prompt text will appear here…")
+        self._txt_prompt.setMinimumHeight(110)
+        sl.addWidget(self._txt_prompt, stretch=3)
+
+        # Response text
+        sl.addWidget(QLabel("<b>LLM Response:</b>"))
+        self._txt_response = QTextEdit()
+        self._txt_response.setReadOnly(True)
+        self._txt_response.setPlaceholderText(
+            "LLM response will appear here…\n\n"
+            "(Responses are captured by the Proxy or MCP recorder. "
+            "The Chrome extension captures prompts only.)")
+        self._txt_response.setMinimumHeight(110)
+        sl.addWidget(self._txt_response, stretch=3)
+
+        # Metadata group
+        self._meta_group = QGroupBox("Metadata")
+        mf = QFormLayout(self._meta_group)
+        mf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._lbl_ts      = QLabel("—")
+        self._lbl_llm     = QLabel("—")
+        self._lbl_source  = QLabel("—")
+        self._lbl_branch  = QLabel("—")
+        mf.addRow("Timestamp:", self._lbl_ts)
+        mf.addRow("LLM:",       self._lbl_llm)
+        mf.addRow("Source:",    self._lbl_source)
+        mf.addRow("Branch:",    self._lbl_branch)
+        sl.addWidget(self._meta_group)
+
+        # Fork origin group (hidden unless branch is a fork)
+        self._fork_group = QGroupBox("Fork Origin")
+        ff = QFormLayout(self._fork_group)
+        ff.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._lbl_fork_parent  = QLabel("—")
         self._lbl_fork_trigger = QLabel("—")
-        fork_origin_layout.addRow("Trigger:", self._lbl_fork_trigger)
-        self._lbl_fork_reason = QLabel("—")
+        self._lbl_fork_reason  = QLabel("—")
         self._lbl_fork_reason.setWordWrap(True)
-        fork_origin_layout.addRow("Reason:", self._lbl_fork_reason)
-        self._lbl_fork_context = QLabel("—")
-        self._lbl_fork_context.setWordWrap(True)
-        fork_origin_layout.addRow("Context:", self._lbl_fork_context)
-        self._fork_origin_group.setVisible(False)
-        details_layout.addWidget(self._fork_origin_group)
-        
-        form = QFormLayout()
-        
-        self._edit_name = QLineEdit()
-        self._edit_name.textChanged.connect(self._queue_auto_save)
-        form.addRow("Name:", self._edit_name)
-        
-        self._combo_status = QComboBox()
-        self._combo_status.addItems([label for val, label in BRANCH_STATUSES])
-        self._combo_status.currentIndexChanged.connect(self._queue_auto_save)
-        form.addRow("Status:", self._combo_status)
-        
-        details_layout.addLayout(form)
-        
-        details_layout.addWidget(QLabel("<b>Branch Notes:</b>"))
-        self._edit_notes = QTextEdit()
-        self._edit_notes.textChanged.connect(self._queue_auto_save)
-        details_layout.addWidget(self._edit_notes, stretch=1)
-        
-        details_layout.addWidget(QLabel("<b>Prompts in Branch:</b>"))
-        # --- #4 & #10: PromptTreeWidget with DnD and sortable headers ---
-        self._prompt_list = PromptTreeWidget()
-        self._prompt_list.setHeaderLabels(["Date", "LLM", "Preview"])
-        self._prompt_list.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self._prompt_list.itemDoubleClicked.connect(self._on_prompt_double_clicked)
-        self._prompt_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self._prompt_list.customContextMenuRequested.connect(self._on_prompt_context_menu)
-        self._prompt_list.prompt_moved.connect(self._on_prompt_reordered)
-        details_layout.addWidget(self._prompt_list, stretch=2)
-        
-        action_row = QHBoxLayout()
-        btn_fork = QPushButton("🌱 Fork Branch")
-        btn_fork.setProperty("class", "primary")
-        btn_fork.clicked.connect(lambda: self._prompt_fork_creation(self._active_branch))
-        action_row.addWidget(btn_fork)
+        ff.addRow("Parent branch:", self._lbl_fork_parent)
+        ff.addRow("Trigger:",       self._lbl_fork_trigger)
+        ff.addRow("Reason:",        self._lbl_fork_reason)
+        self._fork_group.setVisible(False)
+        sl.addWidget(self._fork_group)
 
-        # --- #1: Merge button ---
-        btn_merge = QPushButton("🔀 Merge")
-        btn_merge.clicked.connect(lambda: self._prompt_merge(self._active_branch))
-        action_row.addWidget(btn_merge)
-        
-        btn_eadr = QPushButton("📝 eADR Note")
-        btn_eadr.clicked.connect(lambda: self._trigger_eadr_note(self._active_tree, self._active_branch))
-        action_row.addWidget(btn_eadr)
-        
-        details_layout.addLayout(action_row)
-        
-        self._details_widget = details_widget
-        self._details_widget.setEnabled(False)
-        self._splitter.addWidget(self._details_widget)
-        
-        self._splitter.setStretchFactor(0, 3)
+        # Action buttons
+        acts = QHBoxLayout()
+
+        self._btn_checkout = QPushButton("⬤ Checkout Branch")
+        self._btn_checkout.setToolTip("New prompts go to this branch")
+        self._btn_checkout.clicked.connect(self._checkout_from_selection)
+        acts.addWidget(self._btn_checkout)
+
+        self._btn_eadr = QPushButton("📝 eADR Note")
+        self._btn_eadr.clicked.connect(self._eadr_from_selection)
+        acts.addWidget(self._btn_eadr)
+
+        self._btn_copy = QPushButton("📋 Copy Prompt")
+        self._btn_copy.clicked.connect(self._copy_prompt_from_selection)
+        acts.addWidget(self._btn_copy)
+
+        sl.addLayout(acts)
+
+        self._sidebar = sidebar
+        self._sidebar.setEnabled(False)
+        self._splitter.addWidget(sidebar)
+
+        self._splitter.setStretchFactor(0, 2)
         self._splitter.setStretchFactor(1, 1)
 
-    # ==============================================================
-    # Core Logic
-    # ==============================================================
+    def _init_splitter_sizes(self) -> None:
+        total = max(self.width(), 1100)
+        sw = max(360, int(total * 0.33))
+        self._splitter.setSizes([total - sw, sw])
 
-    def _fit_to_view(self):
-        if self._graph_view.scene.items():
-            self._graph_view.fitInView(
-                self._graph_view.scene.itemsBoundingRect(),
-                Qt.AspectRatioMode.KeepAspectRatio)
 
-    # --- #8: Debounced position persistence ---
-
-    def _queue_position_save(self, tree_id: str, branch_id: str, pos: QPointF):
-        """Queue a position update; flushed after a short debounce."""
-        tree = next((t for t in self._trees if t.id == tree_id), None)
-        if not tree:
-            return
-        if getattr(tree, "layout_positions", None) is None:
-            tree.layout_positions = {}
-        tree.layout_positions[branch_id] = (float(pos.x()), float(pos.y()))
-        self._pending_positions[(tree_id, branch_id)] = pos
-        self._pos_save_timer.start()
-
-    def _flush_position_saves(self):
-        """Write all pending position changes in a single save."""
-        if self._pending_positions:
-            self._pending_positions.clear()
-            save_conversation_trees(self._trees)
-
-    # Keep the old name as a thin compat shim
-    def persist_node_position(self, tree_id: str, branch_id: str, pos: QPointF):
-        self._queue_position_save(tree_id, branch_id, pos)
-
-    # ==============================================================
-    # Refresh / Sync
-    # ==============================================================
-
-    def refresh(self):
-        if getattr(self, "_is_dragging_node", False):
-            return
-
-        if self._save_timer.isActive():
-            self._execute_save()
-
-        # 1. SAVE VIEWPORT STATE
+    def refresh(self) -> None:
+        """Sync trees from the prompt database, rebuild selector + graph."""
+        # Save viewport so we can restore after redraw
         saved_transform = self._graph_view.transform()
-        viewport_rect = self._graph_view.viewport().rect()
-        saved_center = self._graph_view.mapToScene(viewport_rect.center())
+        center = self._graph_view.mapToScene(
+            self._graph_view.viewport().rect().center())
         self._graph_view.viewport().setUpdatesEnabled(False)
 
         active_tree_id = self._active_tree.id if self._active_tree else None
-        active_branch_id = self._active_branch.id if self._active_branch else None
 
-        self._trees = load_conversation_trees()
-        
+        self._trees = self._mw.prompt_database.load_trees()
         db = getattr(self._mw, "prompt_database", None)
         suggestions = auto_detect_trees(db) if db else []
-        
-        existing_trees_by_cid = {}
-        for t in self._trees:
-            cid = getattr(t, "source_conversation_id", None)
-            if not cid:
-                for tag in getattr(t, "tags", []):
-                    if isinstance(tag, str) and tag.startswith("cid:"):
-                        cid = tag[4:]
-                        break
-            if not cid:
-                cid = t.name
-            existing_trees_by_cid[cid] = t
 
-        trees_modified = False
-        
+        sug_by_cid = {s["conversation_id"]: s for s in suggestions
+                      if s.get("conversation_id")}
+
+        # Build existing-tree lookup by conversation ID
+        existing: dict = {}
+        for t in self._trees:
+            cid = self._get_tree_cid(t)
+            if cid:
+                existing[cid] = t
+
+        modified = False
+
         for sug in suggestions:
-            cid = sug["conversation_id"]
+            cid = sug.get("conversation_id")
             if not cid:
                 continue
-                
-            if cid not in existing_trees_by_cid:
-                new_tree = ConversationTree(name=cid, description=sug["sample_description"])
+            newest_ts = sug.get("last_timestamp") or datetime.now()
+
+            # Resolve full prompt objects for fork detection
+            sug_prompts = [db.get_prompt(pid) for pid in sug["prompt_ids"]]
+            sug_prompts = [p for p in sug_prompts if p is not None]
+
+            if cid not in existing:
+                # Create a new tree for this conversation
+                desc = sug.get("sample_description", "")
+                new_tree = ConversationTree(
+                    name=desc[:60] or cid,
+                    description=desc,
+                )
                 new_tree.source_conversation_id = cid
-                
                 if not hasattr(new_tree, "tags"):
                     new_tree.tags = []
-                new_tree.tags.append(f"cid:{cid}")
-                
-                root = new_tree.get_root_branch()
-                root.prompt_ids = sug["prompt_ids"]
+                if f"cid:{cid}" not in new_tree.tags:
+                    new_tree.tags.append(f"cid:{cid}")
+
+                # Use fork detection to build branches from prompt metadata
+                if build_tree_with_forks(new_tree, sug_prompts, db):
+                    pass  # tree populated with fork-aware branches
+                else:
+                    # Fallback: linear assignment to root branch
+                    root = new_tree.get_root_branch()
+                    root.prompt_ids = list(sug["prompt_ids"])
+                    root.updated_at = newest_ts
+
+                new_tree.updated_at = newest_ts
                 self._trees.append(new_tree)
-                existing_trees_by_cid[cid] = new_tree
-                trees_modified = True
+                existing[cid] = new_tree
+                modified = True
             else:
-                tree = existing_trees_by_cid[cid]
-                
-                all_ids = set()
-                for b in tree.branches:
-                    all_ids.update(b.prompt_ids)
-                
-                new_prompts = [pid for pid in sug["prompt_ids"] if pid not in all_ids]
-                if new_prompts:
-                    # --- #5: Route new prompts to the checked-out branch ---
-                    target_branch = tree.get_checked_out_branch()
+                # Update existing tree with any new prompts (fork-aware)
+                tree = existing[cid]
+                if build_tree_with_forks(tree, sug_prompts, db):
+                    tree.updated_at = newest_ts
+                    modified = True
 
-                    if target_branch:
-                        target_branch.prompt_ids.extend(new_prompts)
-                        trees_modified = True
+        # Sort trees newest-first
+        def _sort_key(t: ConversationTree):
+            cid = self._get_tree_cid(t)
+            sug = sug_by_cid.get(cid) if cid else None
+            sug_ts = sug.get("last_timestamp") if sug else None
+            tree_ts = getattr(t, "updated_at", None) or getattr(t, "created_at", None)
+            return sug_ts or tree_ts or datetime.min
 
-        if trees_modified:
-            save_conversation_trees(self._trees)
+        self._trees.sort(key=_sort_key, reverse=True)
 
-        # --- Rebuild tree selector, filtering by search ---
+        if modified:
+            db = getattr(self._mw, "prompt_database", None)
+            if db:
+                for tree in self._trees:
+                    db.save_tree(tree)
+
+        # Rebuild the tree selector combo
         self._tree_selector.blockSignals(True)
         self._tree_selector.clear()
-        
+
         restore_idx = 0
-        search_lower = self._search_term.strip().lower()
-        for idx, tree in enumerate(self._trees):
-            display = f"{tree.name} ({len(tree.branches)} branches)"
-            # --- #6: Filter tree selector ---
-            if search_lower and search_lower not in tree.name.lower():
-                # Check if any branch name matches
-                if not any(search_lower in b.name.lower() for b in tree.branches):
-                    continue
-            self._tree_selector.addItem(display, tree.id)
+        search = self._search_term.strip().lower()
+
+        for tree in self._trees:
+            if search and search not in tree.name.lower():
+                continue
+            root_b = tree.get_root_branch()
+            # Count all unique prompts across every branch
+            all_pids: set = set()
+            for b in tree.branches:
+                all_pids.update(b.prompt_ids)
+            n_prompts = len(all_pids)
+            n_branches = len(tree.branches)
+            label = (f"{tree.name}  "
+                     f"[{n_prompts} prompts · {n_branches} branch{'es' if n_branches != 1 else ''}]")
+            self._tree_selector.addItem(label, tree.id)
             if active_tree_id and tree.id == active_tree_id:
                 restore_idx = self._tree_selector.count() - 1
-                self._active_tree = tree
-                
-        self._tree_selector.setCurrentIndex(restore_idx)
+
+        self._tree_selector.setCurrentIndex(
+            restore_idx if self._tree_selector.count() else -1)
         self._tree_selector.blockSignals(False)
-        
-        if self._trees and not self._active_tree:
-            self._active_tree = self._trees[0]
-            self._tree_selector.setCurrentIndex(0)
-            
-        if self._active_tree:
-            self._graph_view.draw_tree(
-                self._active_tree,
-                preserve_viewport=True,
-                show_hidden=self._show_hidden,
-                search_term=self._search_term)
 
-        if active_branch_id and self._active_tree:
-            self.select_branch(active_branch_id, center_view=False)
+        # Restore active tree
+        if not self._active_tree and self._tree_selector.count():
+            first_id = self._tree_selector.itemData(0)
+            self._active_tree = next(
+                (t for t in self._trees if t.id == first_id), None)
 
-        # --- #5: Update checkout label ---
+        self._redraw_graph()
         self._update_checkout_label()
 
-        # 2. RESTORE VIEWPORT STATE
         self._graph_view.setTransform(saved_transform)
-        self._graph_view.centerOn(saved_center)
+        self._graph_view.centerOn(center)
         self._graph_view.viewport().setUpdatesEnabled(True)
 
-    def _on_tree_changed(self, index: int):
+
+    @staticmethod
+    def _get_tree_cid(tree: ConversationTree) -> Optional[str]:
+        cid = getattr(tree, "source_conversation_id", None)
+        if cid:
+            return cid
+        for tag in getattr(tree, "tags", []):
+            if isinstance(tag, str) and tag.startswith("cid:"):
+                return tag[4:]
+        return None
+
+    def _redraw_graph(self) -> None:
+        if not self._active_tree:
+            return
+        db = getattr(self._mw, "prompt_database", None)
+        self._graph_view.draw_prompt_tree(
+            self._active_tree, db,
+            show_hidden=self._show_hidden,
+            search_term=self._search_term,
+        )
+
+    def _fit_to_view(self) -> None:
+        if self._graph_view._scene.items():
+            self._graph_view.fitInView(
+                self._graph_view._scene.itemsBoundingRect(),
+                Qt.AspectRatioMode.KeepAspectRatio)
+
+
+    @Slot(int)
+    def _on_tree_changed(self, index: int) -> None:
         if index < 0:
             return
         tree_id = self._tree_selector.itemData(index)
         tree = next((t for t in self._trees if t.id == tree_id), None)
         if not tree:
             return
-        
+
         self._active_tree = tree
-        self._active_branch = None
-        self._details_widget.setEnabled(False)
-        self._lbl_branch_title.setText("<h2>Select a node</h2>")
-        self._fork_origin_group.setVisible(False)
-        
-        self._graph_view.draw_tree(
-            self._active_tree,
-            show_hidden=self._show_hidden,
-            search_term=self._search_term)
+        self._active_prompt_id = None
+        self._active_branch_id = None
+        self._sidebar.setEnabled(False)
+        self._lbl_context.setText("<i>Select a prompt node to read its content</i>")
+        self._fork_group.setVisible(False)
+
+        self._redraw_graph()
         self._update_checkout_label()
         QTimer.singleShot(50, self._fit_to_view)
 
-    # ==============================================================
-    # Branch Selection & Details
-    # ==============================================================
 
-    def select_branch(self, branch_id: str, center_view: bool = True):
-        if not self._active_tree:
-            return
-            
-        self._active_branch = self._active_tree.get_branch(branch_id)
-        if not self._active_branch:
-            return
-            
-        self._graph_view.select_node(branch_id, center_view=center_view)
-
-        self._details_widget.setEnabled(True)
-        self._lbl_branch_title.setText(f"<h2>{self._active_branch.name}</h2>")
-        
-        self._edit_name.blockSignals(True)
-        self._combo_status.blockSignals(True)
-        self._edit_notes.blockSignals(True)
-        
-        self._edit_name.setText(self._active_branch.name)
-        self._edit_notes.setPlainText(self._active_branch.notes)
-        for i, (val, label) in enumerate(BRANCH_STATUSES):
-            if val == self._active_branch.status:
-                self._combo_status.setCurrentIndex(i)
-                break
-                
-        self._edit_name.blockSignals(False)
-        self._combo_status.blockSignals(False)
-        self._edit_notes.blockSignals(False)
-
-        # --- #7: Show fork-point context ---
-        self._update_fork_origin_display()
-        
-        self._refresh_prompt_list()
-
-    def _update_fork_origin_display(self):
-        """Populate the fork-origin group box for the active branch."""
-        branch = self._active_branch
-        if not branch or not branch.fork_point_id or not self._active_tree:
-            self._fork_origin_group.setVisible(False)
-            return
-
-        fp = self._active_tree.get_fork_point(branch.fork_point_id)
-        if not fp:
-            self._fork_origin_group.setVisible(False)
-            return
-
-        self._fork_origin_group.setVisible(True)
-        parent = self._active_tree.get_branch(fp.parent_branch_id)
-        self._lbl_fork_parent.setText(parent.name if parent else "—")
-
-        trigger_label = fp.trigger
-        for val, label in FORK_TRIGGERS:
-            if val == fp.trigger:
-                trigger_label = label
-                break
-        self._lbl_fork_trigger.setText(trigger_label)
-        self._lbl_fork_reason.setText(fp.reason or "—")
-        self._lbl_fork_context.setText(fp.context_summary or "—")
-
-    def _refresh_prompt_list(self):
-        self._prompt_list.setSortingEnabled(False)  # pause while loading
-        self._prompt_list.clear()
-        if not self._active_branch:
-            return
-            
+    def select_prompt(self, prompt_id: str, branch_id: str) -> None:
+        """Called by PromptNodeItem on click — populate the sidebar."""
         db = getattr(self._mw, "prompt_database", None)
-        if not db:
+        if not db or not self._active_tree:
             return
-            
-        for pid in self._active_branch.prompt_ids:
-            p = db.get_prompt(pid)
-            if p:
-                date_str = p.timestamp.strftime("%m-%d %H:%M") if p.timestamp else "—"
-                desc = p.description or (p.prompt_text[:40] + "…" if p.prompt_text else "—")
-                item = QTreeWidgetItem([date_str, p.llm_used or "Unknown", desc])
-                item.setData(0, Qt.ItemDataRole.UserRole, pid)
-                self._prompt_list.addTopLevelItem(item)
 
-        self._prompt_list.setSortingEnabled(True)
-
-    def _on_prompt_double_clicked(self, item: QTreeWidgetItem, column: int):
-        prompt_id = item.data(0, Qt.ItemDataRole.UserRole)
-        if prompt_id and hasattr(self._mw, "open_prompt_viewer"):
-            self._mw.open_prompt_viewer(prompt_id)
-
-    # ==============================================================
-    # Auto-save
-    # ==============================================================
-
-    def _queue_auto_save(self):
-        self._save_timer.start()
-
-    def _execute_save(self):
-        if not self._active_branch or not self._active_tree:
+        p = db.get_prompt(prompt_id)
+        if not p:
             return
-            
-        self._active_branch.name = self._edit_name.text()
-        self._active_branch.notes = self._edit_notes.toPlainText()
-        self._active_branch.status = BRANCH_STATUSES[self._combo_status.currentIndex()][0]
-        self._active_branch.updated_at = datetime.now()
-        
-        save_conversation_trees(self._trees)
-        
-        for item in self._graph_view.scene.items():
-            if isinstance(item, NodeItem) and item.branch.id == self._active_branch.id:
-                item.update()
-                break
 
-    # ==============================================================
-    # Search & Filter (#6)
-    # ==============================================================
+        branch = self._active_tree.get_branch(branch_id)
+        if not branch:
+            return
+
+        self._active_prompt_id = prompt_id
+        self._active_branch_id = branch_id
+
+        self._graph_view.select_node(prompt_id)
+        self._sidebar.setEnabled(True)
+
+        uids = TreeGraphView.unique_prompt_ids(self._active_tree, branch)
+        try:
+            pos = uids.index(prompt_id) + 1
+        except ValueError:
+            pos = "?"
+        self._lbl_context.setText(
+            f"<b>{branch.name}</b>  ·  prompt {pos} of {len(uids)}")
+
+        self._txt_prompt.setPlainText(
+            p.prompt_text or "(no prompt text recorded)")
+        self._txt_response.setPlainText(
+            p.response_text or "(no response captured for this prompt)")
+
+        ts = p.timestamp.strftime("%Y-%m-%d  %H:%M:%S") if p.timestamp else "—"
+        self._lbl_ts.setText(ts)
+        self._lbl_llm.setText(p.llm_used or "—")
+        self._lbl_source.setText(p.source or "—")
+        self._lbl_branch.setText(branch.name)
+
+        if branch.fork_point_id:
+            fp = self._active_tree.get_fork_point(branch.fork_point_id)
+            if fp:
+                parent_b = self._active_tree.get_branch(fp.parent_branch_id)
+                self._lbl_fork_parent.setText(parent_b.name if parent_b else "—")
+                trigger_label = fp.trigger
+                for val, label in FORK_TRIGGERS:
+                    if val == fp.trigger:
+                        trigger_label = label
+                        break
+                self._lbl_fork_trigger.setText(trigger_label)
+                self._lbl_fork_reason.setText(fp.reason or "—")
+                self._fork_group.setVisible(True)
+            else:
+                self._fork_group.setVisible(False)
+        else:
+            self._fork_group.setVisible(False)
+
 
     @Slot(str)
-    def _on_search_changed(self, text: str):
+    def _on_search_changed(self, text: str) -> None:
         self._search_term = text
-        if self._active_tree:
-            self._graph_view.draw_tree(
-                self._active_tree,
-                preserve_viewport=True,
-                show_hidden=self._show_hidden,
-                search_term=self._search_term)
-
-    # ==============================================================
-    # Show/Hide archived (#9)
-    # ==============================================================
+        self._redraw_graph()
 
     @Slot(bool)
-    def _on_show_hidden_toggled(self, checked: bool):
+    def _on_show_hidden_toggled(self, checked: bool) -> None:
         self._show_hidden = checked
-        if self._active_tree:
-            self._graph_view.draw_tree(
-                self._active_tree,
-                preserve_viewport=True,
-                show_hidden=self._show_hidden,
-                search_term=self._search_term)
+        self._redraw_graph()
 
-    # ==============================================================
-    # Prompt Context Menu & Actions
-    # ==============================================================
 
-    @Slot()
-    def _toggle_layout(self):
-        if self._graph_view.layout_direction == "horizontal":
-            self._graph_view.layout_direction = "vertical"
-            self.btn_layout.setText("⬍ Vertical")
-        else:
-            self._graph_view.layout_direction = "horizontal"
-            self.btn_layout.setText("⬌ Horizontal")
-            
-        if self._active_tree:
-            self._active_tree.layout_positions = {}
-            self._graph_view.draw_tree(
-                self._active_tree,
-                show_hidden=self._show_hidden,
-                search_term=self._search_term)
-            self._fit_to_view()
-
-    @Slot(object)
-    def _on_prompt_context_menu(self, pos):
-        item = self._prompt_list.itemAt(pos)
-        if not item:
+    def _checkout_branch(self, tree: ConversationTree, branch: Branch) -> None:
+        if not tree or not branch:
             return
-            
-        prompt_id = item.data(0, Qt.ItemDataRole.UserRole)
-        row_index = self._prompt_list.indexOfTopLevelItem(item)
-        
-        menu = QMenu()
-
-        restore_act = QAction("↩ Restore Prompt (Copy to Clipboard)", menu)
-        restore_act.triggered.connect(lambda: self._restore_prompt(prompt_id))
-        menu.addAction(restore_act)
-
-        # --- #3: Fork from this specific prompt ---
-        fork_here_act = QAction("🌱 Fork from this prompt…", menu)
-        fork_here_act.triggered.connect(
-            lambda: self._prompt_fork_creation(self._active_branch, fork_index=row_index))
-        menu.addAction(fork_here_act)
-
-        # --- #4: Move to another branch ---
-        move_act = QAction("📦 Move to another branch…", menu)
-        move_act.triggered.connect(lambda: self._move_prompt_to_branch(prompt_id))
-        menu.addAction(move_act)
-
-        menu.addSeparator()
-
-        remove_act = QAction("🗑 Remove from this branch", menu)
-        remove_act.triggered.connect(lambda: self._remove_prompt_from_branch(prompt_id))
-        menu.addAction(remove_act)
-
-        menu.exec(self._prompt_list.viewport().mapToGlobal(pos))
-        
-    def _restore_prompt(self, prompt_id: str):
-        db = getattr(self._mw, "prompt_database", None)
-        if not db:
-            return
-        
-        prompt = db.get_prompt(prompt_id)
-        if prompt:
-            QApplication.clipboard().setText(prompt.prompt_text)
-            self._mw.log(f"Prompt '{prompt.description}' restored to clipboard.")
-            QMessageBox.information(
-                self, "Prompt Restored",
-                "Prompt text copied to clipboard! You can now paste it into your LLM.")
-
-    # --- #4: Prompt reorder handler ---
-    @Slot(str, int, int)
-    def _on_prompt_reordered(self, prompt_id: str, old_row: int, new_row: int):
-        """Handle drag-and-drop reorder within the current branch."""
-        if not self._active_branch or not self._active_tree:
-            return
-        pids = self._active_branch.prompt_ids
-        if 0 <= old_row < len(pids) and 0 <= new_row < len(pids):
-            pids.insert(new_row, pids.pop(old_row))
-            self._active_branch.updated_at = datetime.now()
-            save_conversation_trees(self._trees)
-
-    # --- #4: Move prompt to another branch ---
-    def _move_prompt_to_branch(self, prompt_id: str):
-        if not self._active_tree or not self._active_branch:
-            return
-
-        choices = []
-        for branch in self._active_tree.get_visible_branches(show_hidden=self._show_hidden):
-            if branch.id != self._active_branch.id:
-                choices.append((f"{branch.name} ({len(branch.prompt_ids)} prompts)", branch))
-
-        if not choices:
-            QMessageBox.information(self, "No Targets", "No other visible branches to move to.")
-            return
-
-        labels = [c[0] for c in choices]
-        chosen, ok = QInputDialog.getItem(
-            self, "Move Prompt", "Move to branch:", labels, 0, False)
-        if not ok:
-            return
-
-        _, target = choices[labels.index(chosen)]
-        if self._active_tree.move_prompt(prompt_id, self._active_branch.id, target.id):
-            save_conversation_trees(self._trees)
-            self._refresh_prompt_list()
-            self._mw.log(f"Prompt moved to '{target.name}'.")
-
-    def _remove_prompt_from_branch(self, prompt_id: str):
-        """Remove a prompt from the active branch (doesn't delete from DB)."""
-        if not self._active_branch:
-            return
-        if prompt_id in self._active_branch.prompt_ids:
-            self._active_branch.prompt_ids.remove(prompt_id)
-            self._active_branch.updated_at = datetime.now()
-            save_conversation_trees(self._trees)
-            self._refresh_prompt_list()
-
-    # ==============================================================
-    # Checkout (#5)
-    # ==============================================================
-
-    def _checkout_branch(self, tree: ConversationTree, branch: Branch):
         if tree.checkout_branch(branch.id):
-            save_conversation_trees(self._trees)
+            self._mw.prompt_database.save_tree(tree)
             self._update_checkout_label()
-            self._mw.log(f"Checked out branch '{branch.name}' — new prompts will go here.")
-            # Redraw to update the green badge
-            self._graph_view.draw_tree(
-                tree,
-                preserve_viewport=True,
-                show_hidden=self._show_hidden,
-                search_term=self._search_term)
+            self._redraw_graph()
+            if hasattr(self._mw, "log"):
+                self._mw.log(
+                    f"Checked out '{branch.name}' — new prompts go here.")
 
-    def _update_checkout_label(self):
+    def _checkout_from_selection(self) -> None:
+        if not self._active_tree or not self._active_branch_id:
+            return
+        branch = self._active_tree.get_branch(self._active_branch_id)
+        self._checkout_branch(self._active_tree, branch)
+
+    def _update_checkout_label(self) -> None:
         if self._active_tree:
             co = self._active_tree.get_checked_out_branch()
             if co:
-                self._lbl_checkout.setText(f"⬤ {co.name}")
+                self._lbl_checkout.setText(f"⬤  active: {co.name}")
                 self._lbl_checkout.setToolTip(
                     f"New prompts will be added to: {co.name}")
-            else:
-                self._lbl_checkout.setText("")
+                return
+        self._lbl_checkout.setText("")
+
+
+    def _fork_from_prompt(self, branch: Branch, prompt_id: str) -> None:
+        """Fork from a specific prompt (right-click context menu)."""
+        if not branch or not self._active_tree:
+            return
+        try:
+            fork_index = branch.prompt_ids.index(prompt_id)
+        except ValueError:
+            fork_index = max(0, len(branch.prompt_ids) - 1)
+        self._do_fork(branch, fork_index)
+
+    def _fork_from_selection(self) -> None:
+        """Fork from the currently selected prompt (toolbar button)."""
+        if not self._active_branch_id or not self._active_tree:
+            QMessageBox.information(
+                self, "No selection",
+                "Click a prompt node in the graph first, then press Fork.")
+            return
+        branch = self._active_tree.get_branch(self._active_branch_id)
+        if not branch:
+            return
+        if self._active_prompt_id and self._active_prompt_id in branch.prompt_ids:
+            fork_index = branch.prompt_ids.index(self._active_prompt_id)
         else:
-            self._lbl_checkout.setText("")
+            fork_index = max(0, len(branch.prompt_ids) - 1)
+        self._do_fork(branch, fork_index)
 
-    # ==============================================================
-    # Integration Hooks
-    # ==============================================================
-
-    def add_prompt_to_branch(self, prompt_id: str):
-        if not self._trees:
-            QMessageBox.information(self, "No Trees", "Create/import a conversation tree first.")
-            return
-
-        choices = []
-        for tree in self._trees:
-            for branch in tree.get_visible_branches():
-                choices.append((f"{tree.name} / {branch.name}", tree, branch))
-
-        labels = [c[0] for c in choices]
-        chosen, ok = QInputDialog.getItem(
-            self, "Add to Branch", "Select a branch:", labels, 0, False
-        )
-        if not ok:
-            return
-
-        _, tree, branch = choices[labels.index(chosen)]
-        if prompt_id in branch.prompt_ids:
-            QMessageBox.information(self, "Already Added", "That prompt is already in the selected branch.")
-            return
-
-        branch.prompt_ids.append(prompt_id)
-        
-        tree.updated_at = datetime.now()
-        save_conversation_trees(self._trees)
-        self.refresh()
-
-    # ==============================================================
-    # Fork Creation (#2 + #3)
-    # ==============================================================
-
-    def _prompt_fork_creation(self, parent_branch: Branch, fork_index: int = -1):
-        if not parent_branch or not self._active_tree:
-            return
-
-        prompt_count = len(parent_branch.prompt_ids)
+    def _do_fork(self, parent_branch: Branch, fork_index: int) -> None:
         dlg = ForkDialog(
             parent_branch_name=parent_branch.name,
-            prompt_count=prompt_count,
+            prompt_count=len(parent_branch.prompt_ids),
             default_index=fork_index,
             parent=self,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-
         vals = dlg.get_values()
         if not vals["name"]:
-            QMessageBox.warning(self, "Name required", "Please provide a branch name.")
+            QMessageBox.warning(self, "Name required",
+                                "Please enter a name for the new branch.")
             return
 
         child = self._active_tree.add_branch(
@@ -1346,142 +1141,75 @@ class ForkingPanel(QWidget):
         )
         if child:
             self._active_tree.updated_at = datetime.now()
-            save_conversation_trees(self._trees)
-            self._graph_view.draw_tree(
-                self._active_tree,
-                show_hidden=self._show_hidden,
-                search_term=self._search_term)
-            self.select_branch(child.id)
+            self._mw.prompt_database.save_tree(self._active_tree)
+            self._redraw_graph()
             self.branch_forked.emit(
-                self._active_tree.id, parent_branch.id,
-                child.id, vals["trigger"])
+                self._active_tree.name, parent_branch.name,
+                child.name, vals["trigger"])
+            if hasattr(self._mw, "log"):
+                self._mw.log(
+                    f"Forked '{parent_branch.name}' → new branch '{child.name}'.")
 
-    # ==============================================================
-    # Merge (#1)
-    # ==============================================================
 
-    def _prompt_merge(self, source_branch: Branch):
-        if not source_branch or not self._active_tree:
+    def _merge_from_selection(self) -> None:
+        if not self._active_branch_id or not self._active_tree:
+            QMessageBox.information(
+                self, "No selection",
+                "Select a prompt node first to identify the branch to merge.")
             return
+        branch = self._active_tree.get_branch(self._active_branch_id)
+        if branch:
+            self._do_merge(branch)
+
+    def _do_merge(self, source: Branch) -> None:
         if len(self._active_tree.get_visible_branches()) < 2:
-            QMessageBox.information(self, "Cannot Merge", "Need at least two visible branches.")
+            QMessageBox.information(
+                self, "Cannot merge", "Need at least two branches.")
             return
-
-        dlg = MergeDialog(source_branch, self._active_tree, parent=self)
+        dlg = MergeDialog(source, self._active_tree, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-
         vals = dlg.get_values()
         if not vals["target_branch_id"]:
             return
-
         ok = self._active_tree.merge_branch(
-            source_branch_id=source_branch.id,
+            source_branch_id=source.id,
             target_branch_id=vals["target_branch_id"],
             merge_insights=vals["insights"],
             include_unique_prompts=vals["include_prompts"],
         )
         if ok:
-            save_conversation_trees(self._trees)
+            self._mw.prompt_database.save_tree(self._active_tree)
+            self._redraw_graph()
             target = self._active_tree.get_branch(vals["target_branch_id"])
-            self._mw.log(
-                f"Merged '{source_branch.name}' → '{target.name if target else '?'}'.")
-            self._graph_view.draw_tree(
-                self._active_tree,
-                show_hidden=self._show_hidden,
-                search_term=self._search_term)
-            if target:
-                self.select_branch(target.id)
             self.branch_merged.emit(
-                self._active_tree.id, source_branch.id,
-                vals["target_branch_id"])
+                self._active_tree.name, source.name, vals["insights"])
+            if hasattr(self._mw, "log"):
+                self._mw.log(
+                    f"Merged '{source.name}' → '{target.name if target else '?'}'.")
 
-    # ==============================================================
-    # eADR Integration
-    # ==============================================================
 
-    def _trigger_eadr_note(self, tree: ConversationTree, branch: Branch):
-        if not tree or not branch:
+    def _eadr_from_selection(self) -> None:
+        if not self._active_tree or not self._active_branch_id:
             return
-        
-        context = f"[Branch: {branch.name} | Tree: {tree.name}]\n"
-        
+        branch = self._active_tree.get_branch(self._active_branch_id)
+        if not branch:
+            return
         if hasattr(self._mw, "_eadr_panel"):
-            from llm_buddy.core.eadr import save_eadr_note
-            project = self._mw._eadr_panel.project
-            save_eadr_note(context + "Add your findings here...", project)
+            ctx = f"[Branch: {branch.name} | Tree: {self._active_tree.name}]\n"
+            self._mw.prompt_database.add_eadr_note(
+                ctx + "Add findings here…",
+                self._mw._eadr_panel.project)
             self._mw._eadr_panel.refresh()
-            self._mw.log(f"Auto-generated eADR note for branch '{branch.name}'.")
             self._mw._tabs.setCurrentWidget(self._mw._eadr_panel)
 
-    # ==============================================================
-    # Soft-delete (#9) & Hard Delete
-    # ==============================================================
 
-    def _soft_delete_branch(self, branch: Branch):
-        """Archive a branch (soft-delete) — hide it but keep data."""
-        if not self._active_tree or not branch:
+    def _copy_prompt_from_selection(self) -> None:
+        db = getattr(self._mw, "prompt_database", None)
+        if not db or not self._active_prompt_id:
             return
-        if branch.parent_branch_id is None:
-            QMessageBox.warning(self, "Cannot Archive", "The root branch cannot be archived.")
-            return
-
-        confirm = QMessageBox.question(
-            self, "Archive Branch",
-            f"Archive '{branch.name}' and its sub-branches?\n\n"
-            "They will be hidden but can be restored later via "
-            "'Show archived'.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-
-        self._active_tree.soft_delete_branch(branch.id)
-        save_conversation_trees(self._trees)
-
-        self._active_branch = None
-        self._details_widget.setEnabled(False)
-        self._lbl_branch_title.setText("<h2>Select a node</h2>")
-        self._fork_origin_group.setVisible(False)
-        self._graph_view.draw_tree(
-            self._active_tree,
-            show_hidden=self._show_hidden,
-            search_term=self._search_term)
-        self._mw.log(f"Branch '{branch.name}' archived.")
-
-    def _restore_branch(self, branch: Branch):
-        """Restore a soft-deleted branch."""
-        if not self._active_tree or not branch:
-            return
-        self._active_tree.restore_branch(branch.id)
-        save_conversation_trees(self._trees)
-        self._graph_view.draw_tree(
-            self._active_tree,
-            show_hidden=self._show_hidden,
-            search_term=self._search_term)
-        self._mw.log(f"Branch '{branch.name}' restored.")
-
-    def _delete_branch(self, branch: Branch):
-        """Permanently remove a branch and all sub-branches."""
-        if not self._active_tree:
-            return
-            
-        confirm = QMessageBox.question(
-            self, "Permanently Delete", 
-            f"⚠️ PERMANENTLY delete '{branch.name}' and all its sub-branches?\n\n"
-            "This cannot be undone. Use 'Archive' for a safer alternative.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if confirm == QMessageBox.StandardButton.Yes:
-            self._active_tree.remove_branch(branch.id)
-            self._active_tree.updated_at = datetime.now()
-            save_conversation_trees(self._trees)
-            self._active_branch = None
-            self._details_widget.setEnabled(False)
-            self._lbl_branch_title.setText("<h2>Select a node</h2>")
-            self._fork_origin_group.setVisible(False)
-            self._graph_view.draw_tree(
-                self._active_tree,
-                show_hidden=self._show_hidden,
-                search_term=self._search_term)
+        p = db.get_prompt(self._active_prompt_id)
+        if p:
+            QApplication.clipboard().setText(p.prompt_text or "")
+            if hasattr(self._mw, "log"):
+                self._mw.log("Prompt text copied to clipboard.")

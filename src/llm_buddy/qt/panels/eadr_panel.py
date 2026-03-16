@@ -1,14 +1,12 @@
 """eADR (Elaborated Action Design Research) notes panel for the Qt GUI."""
 
 from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QStandardItemModel, QStandardItem
+from PySide6.QtGui import QKeySequence, QShortcut, QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QLabel, QLineEdit, QPushButton, QPlainTextEdit, QTextBrowser,
     QTreeView, QGroupBox, QMessageBox, QHeaderView,
 )
-
-from llm_buddy.core.eadr import load_eadr_notes, save_eadr_note, delete_eadr_note
 
 
 class EadrPanel(QWidget):
@@ -23,15 +21,16 @@ class EadrPanel(QWidget):
 
     note_saved = Signal()  # emitted after a note is saved
 
-    def __init__(self, log_fn=None, parent=None):
+    def __init__(self, log_fn=None, toast_fn=None, db=None, parent=None):
         super().__init__(parent)
         self._log = log_fn or (lambda m: None)
-        self._notes: list = []  # cached notes list
+        self._show_toast = toast_fn or (lambda msg, level="info": None)
+        self._db = db
+        self._notes: list = []  # cached EadrNote list (newest-first)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # ── Project selector ─────────────────────────────────────────
         proj_row = QHBoxLayout()
         proj_row.addWidget(QLabel("Project:"))
         self._project_entry = QLineEdit("Origin")
@@ -40,11 +39,9 @@ class EadrPanel(QWidget):
         proj_row.addStretch()
         layout.addLayout(proj_row)
 
-        # ── Vertical splitter: editor top / history+display bottom ───
         splitter = QSplitter(Qt.Vertical)
         layout.addWidget(splitter, stretch=1)
 
-        # --- New Note editor ---
         editor_group = QGroupBox("New Note")
         editor_layout = QVBoxLayout(editor_group)
         self._note_edit = QPlainTextEdit()
@@ -63,7 +60,6 @@ class EadrPanel(QWidget):
         editor_layout.addLayout(btn_row)
         splitter.addWidget(editor_group)
 
-        # --- Bottom half: history + display side-by-side ---
         bottom = QSplitter(Qt.Horizontal)
 
         # History tree
@@ -103,10 +99,11 @@ class EadrPanel(QWidget):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
 
-        # ── Load initial data ────────────────────────────────────────
         self._refresh_history()
 
-    # -- public helpers ------------------------------------------------
+        sc_save = QShortcut(QKeySequence("Ctrl+S"), self)
+        sc_save.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_save.activated.connect(self._save_note)
 
     @property
     def project(self) -> str:
@@ -120,6 +117,11 @@ class EadrPanel(QWidget):
     def clear_editor(self) -> None:
         self._note_edit.clear()
 
+    def set_db(self, db) -> None:
+        """Set the database reference after construction."""
+        self._db = db
+        self._refresh_history()
+
     # -- internal slots ------------------------------------------------
 
     @Slot()
@@ -130,27 +132,34 @@ class EadrPanel(QWidget):
                                 "Please enter a note before saving.")
             return
         project = self.project
-        if save_eadr_note(text, project):
+        if self._db is None:
+            QMessageBox.critical(self, "Error",
+                                 "Database not available.")
+            return
+        note_id = self._db.add_eadr_note(text, project)
+        if note_id >= 0:
             self._log(f"eADR note saved for project: {project}")
             self._note_edit.clear()
             self._refresh_history()
             self.note_saved.emit()
-            QMessageBox.information(self, "Success",
-                                    "eADR note saved successfully.")
+            self._show_toast("eADR note saved.", "success")
         else:
             QMessageBox.critical(self, "Error", "Failed to save eADR note.")
 
     @Slot()
     def _refresh_history(self) -> None:
-        self._notes = load_eadr_notes()
+        if self._db is not None:
+            self._notes = self._db.get_eadr_notes()
+        else:
+            self._notes = []
         self._model.removeRows(0, self._model.rowCount())
-        for note in reversed(self._notes):
-            ts_item = QStandardItem(note["timestamp"])
+        for note in self._notes:  # already newest-first from db
+            ts_item = QStandardItem(note.timestamp)
             ts_item.setEditable(False)
-            ts_item.setToolTip(note["timestamp"])
-            proj_item = QStandardItem(note["project"])
+            ts_item.setToolTip(note.timestamp)
+            proj_item = QStandardItem(note.project)
             proj_item.setEditable(False)
-            proj_item.setToolTip(note["project"])
+            proj_item.setToolTip(note.project)
             self._model.appendRow([ts_item, proj_item])
         self._btn_delete.setEnabled(False)
         self._display.clear()
@@ -167,14 +176,12 @@ class EadrPanel(QWidget):
             self._display.clear()
             return
         row = indexes[0].row()
-        # Notes are displayed reversed; compute real index
-        real_idx = len(self._notes) - 1 - row
-        if 0 <= real_idx < len(self._notes):
-            note = self._notes[real_idx]
+        if 0 <= row < len(self._notes):
+            note = self._notes[row]
             html = (
-                f"<b>Project:</b> {note['project']}<br>"
-                f"<b>Date &amp; Time:</b> {note['timestamp']}<br><br>"
-                f"<pre>{note['note']}</pre>"
+                f"<b>Project:</b> {note.project}<br>"
+                f"<b>Date &amp; Time:</b> {note.timestamp}<br><br>"
+                f"<pre>{note.note}</pre>"
             )
             self._display.setHtml(html)
             self._btn_delete.setEnabled(True)
@@ -185,7 +192,9 @@ class EadrPanel(QWidget):
         if not indexes:
             return
         row = indexes[0].row()
-        real_idx = len(self._notes) - 1 - row
+        if row < 0 or row >= len(self._notes):
+            return
+        note = self._notes[row]
 
         answer = QMessageBox.question(
             self, "Confirm Deletion",
@@ -196,13 +205,11 @@ class EadrPanel(QWidget):
         if answer != QMessageBox.Yes:
             return
 
-        success, deleted = delete_eadr_note(real_idx)
-        if success and deleted:
+        if self._db and self._db.delete_eadr_note(note.id):
             self._log(
-                f"Deleted note from {deleted['timestamp']} "
-                f"for project '{deleted['project']}'")
+                f"Deleted note from {note.timestamp} "
+                f"for project '{note.project}'")
             self._refresh_history()
-            QMessageBox.information(self, "Success",
-                                    "Note deleted successfully.")
+            self._show_toast("Note deleted.", "info")
         else:
             QMessageBox.critical(self, "Error", "Failed to delete note.")

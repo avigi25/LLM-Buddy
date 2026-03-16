@@ -11,11 +11,9 @@ import os
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.path.join(os.getcwd(), "data")
-os.makedirs(DATA_DIR, exist_ok=True)
+from llm_buddy.paths import get_data_dir
 
-# Update the default:
-DEFAULT_CONFIG_FILE = os.path.join(DATA_DIR, "profiles.json")
+DEFAULT_CONFIG_FILE = os.path.join(get_data_dir(), "profiles.json")
 
 
 def load_profiles(config_file=None):

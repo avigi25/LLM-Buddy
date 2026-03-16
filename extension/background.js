@@ -57,6 +57,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.type === "CONVERSATION_ID_UPDATE") {
+    sendResponse({ success: true });
+    updateConversationId(message.data);
+    return false;
+  }
+
   if (message.type === "CHECK_SERVER") {
     getServerUrl().then(async (url) => {
       try {
@@ -90,6 +96,30 @@ async function updateResponse(data) {
     }
   } catch (err) {
     console.error("LLM Buddy: could not send response", err.message);
+  }
+}
+
+// Update the conversation_id for a prompt (used when the first message
+// in a ChatGPT conversation gets a fallback ID that is corrected after
+// the response arrives and the URL changes).
+async function updateConversationId(data) {
+  const serverUrl = await getServerUrl();
+  try {
+    const response = await fetch(`${serverUrl}/update_conversation_id`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt_id: data.promptId,
+        conversation_id: data.conversationId,
+      }),
+    });
+    if (response.ok) {
+      console.log("LLM Buddy: conversation_id updated for prompt", data.promptId);
+    } else {
+      console.error("LLM Buddy: failed to update conversation_id", response.status);
+    }
+  } catch (err) {
+    console.error("LLM Buddy: could not update conversation_id", err.message);
   }
 }
 

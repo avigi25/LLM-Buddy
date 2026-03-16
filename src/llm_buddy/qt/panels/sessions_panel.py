@@ -13,8 +13,8 @@ import logging
 import os
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Slot, QTimer
-from PySide6.QtGui import QFont, QStandardItem, QStandardItemModel
+from PySide6.QtCore import Qt, Signal, Slot, QTimer
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -38,17 +38,12 @@ from llm_buddy.core.sessions import (
     capture_snapshot,
     compute_session_diff,
     generate_session_summary_markdown,
-    get_active_session,
-    load_sessions,
-    save_sessions,
 )
+from llm_buddy.qt.theme import get_theme_colors, current_theme_name
 
 logger = logging.getLogger(__name__)
 
 
-# =====================================================================
-# Summary dialog
-# =====================================================================
 
 class _SummaryDialog(QDialog):
     """Modal dialog that displays a session summary in monospace text."""
@@ -103,9 +98,6 @@ class _SummaryDialog(QDialog):
         self._export_fn(self._session, self._md_text)
 
 
-# =====================================================================
-# Sessions panel
-# =====================================================================
 
 class SessionsPanel(QWidget):
     """Research session management panel.
@@ -114,6 +106,11 @@ class SessionsPanel(QWidget):
     and prompt counters, session notes, and a history table with
     context-menu actions (view summary, export markdown, reopen, delete).
     """
+
+    # Emitted every second while a session is active/paused.
+    # Args: session_name (str), elapsed_str (str), is_paused (bool)
+    # Emitted with empty strings when no session is active.
+    session_state_changed = Signal(str, str, bool)
 
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -126,8 +123,10 @@ class SessionsPanel(QWidget):
         self._timer.timeout.connect(self._update_session_timer)
 
         # Load persisted sessions
-        self._sessions = load_sessions()
-        self._active_session = get_active_session(self._sessions)
+        db = self._mw.prompt_database
+        self._sessions = db.get_sessions()
+        self._active_session = next(
+            (s for s in self._sessions if s.status in ("active", "paused")), None)
 
         self._build_ui()
         self._refresh_session_tree()
@@ -136,15 +135,10 @@ class SessionsPanel(QWidget):
         if self._active_session:
             self._set_active_session_ui(self._active_session)
 
-    # ------------------------------------------------------------------
-    # UI construction
-    # ------------------------------------------------------------------
-
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # ── Active session controls ───────────────────────────────────
         active_group = QGroupBox("Active Session")
         active_layout = QVBoxLayout(active_group)
 
@@ -154,7 +148,7 @@ class SessionsPanel(QWidget):
         self._btn_start.clicked.connect(self.start_new_session)
         btn_row.addWidget(self._btn_start)
 
-        self._btn_pause = QPushButton("Pause")
+        self._btn_pause = QPushButton("\u23f8 Pause")
         self._btn_pause.setEnabled(False)
         self._btn_pause.setToolTip("Pause the session timer")
         self._btn_pause.clicked.connect(self._toggle_pause)
@@ -207,7 +201,6 @@ class SessionsPanel(QWidget):
 
         layout.addWidget(active_group)
 
-        # ── Session notes ─────────────────────────────────────────────
         notes_group = QGroupBox("Session Notes")
         notes_layout = QVBoxLayout(notes_group)
         self._notes_edit = QPlainTextEdit()
@@ -215,7 +208,6 @@ class SessionsPanel(QWidget):
         notes_layout.addWidget(self._notes_edit)
         layout.addWidget(notes_group)
 
-        # ── Session history ───────────────────────────────────────────
         history_group = QGroupBox("Session History")
         history_layout = QVBoxLayout(history_group)
 
@@ -244,6 +236,13 @@ class SessionsPanel(QWidget):
         self._history_tree.customContextMenuRequested.connect(
             self._on_context_menu)
 
+        self._sessions_empty_label = QLabel(
+            "No sessions yet\n\n"
+            "Click  Start Session  to begin tracking your workflow")
+        self._sessions_empty_label.setAlignment(Qt.AlignCenter)
+        self._sessions_empty_label.setStyleSheet(
+            "color: palette(mid); padding: 24px;")
+        history_layout.addWidget(self._sessions_empty_label)
         history_layout.addWidget(self._history_tree)
 
         # Bottom button row
@@ -272,9 +271,17 @@ class SessionsPanel(QWidget):
 
         layout.addWidget(history_group, stretch=1)
 
-    # ------------------------------------------------------------------
-    # Start / Pause / Resume / End session
-    # ------------------------------------------------------------------
+        sc_session = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
+        sc_session.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_session.activated.connect(self._shortcut_session_toggle)
+
+    @Slot()
+    def _shortcut_session_toggle(self):
+        """Ctrl+Shift+S: start a new session or pause/resume the active one."""
+        if self._active_session:
+            self._toggle_pause()
+        else:
+            self.start_new_session()
 
     @Slot()
     def start_new_session(self):
@@ -298,7 +305,8 @@ class SessionsPanel(QWidget):
         # Capture starting snapshot
         backup_cfg = getattr(self._mw._backup_panel, "_config", None) if hasattr(self._mw, "_backup_panel") else None
         snapshot = capture_snapshot(
-            self._mw.prompt_database, eadr_path=None, backup_config=backup_cfg)
+            self._mw.prompt_database, db=self._mw.prompt_database,
+            backup_config=backup_cfg)
 
         # Determine project name
         project = ""
@@ -316,7 +324,7 @@ class SessionsPanel(QWidget):
 
         self._sessions.append(session)
         self._active_session = session
-        save_sessions(self._sessions)
+        self._mw.prompt_database.add_session(session)
 
         self._set_active_session_ui(session)
         self._refresh_session_tree()
@@ -330,25 +338,39 @@ class SessionsPanel(QWidget):
 
         if self._active_session.status == "active":
             self._active_session.pause()
-            self._btn_pause.setText("Resume")
+            self._btn_pause.setText("\u25b6 Resume")
             self._btn_pause.setToolTip("Resume the session timer")
             self._status_label.setText("\u23f8 Paused")
+            colors = get_theme_colors(current_theme_name())
             self._status_label.setStyleSheet(
-                "color: #ef6c00; font-weight: bold;")
+                f"color: {colors['warning']}; font-weight: bold;")
+            self._elapsed_label.setStyleSheet(
+                "color: palette(mid);"
+                "padding: 4px 16px;"
+                "border: 1px solid palette(mid);"
+                "border-radius: 6px;"
+                "background: palette(base);")
             self._timer.stop()
             self._mw.log(
                 f"Session paused: '{self._active_session.name}'")
         elif self._active_session.status == "paused":
             self._active_session.resume()
-            self._btn_pause.setText("Pause")
+            self._btn_pause.setText("\u23f8 Pause")
             self._btn_pause.setToolTip("Pause the session timer")
             self._status_label.setText("")
             self._status_label.setStyleSheet("")
+            colors = get_theme_colors(current_theme_name())
+            self._elapsed_label.setStyleSheet(
+                f"color: {colors['success']};"
+                "padding: 4px 16px;"
+                "border: 1px solid palette(mid);"
+                "border-radius: 6px;"
+                "background: palette(base);")
             self._timer.start()
             self._mw.log(
                 f"Session resumed: '{self._active_session.name}'")
 
-        save_sessions(self._sessions)
+        self._mw.prompt_database.update_session(self._active_session)
         self._update_session_timer()
         self._refresh_session_tree()
 
@@ -358,7 +380,6 @@ class SessionsPanel(QWidget):
         if not self._active_session:
             return
 
-        # ── Confirmation dialog ──────────────────────────────────────
         reply = QMessageBox.question(
             self, "End Session",
             f"End the session '{self._active_session.name}'?\n\n"
@@ -379,7 +400,8 @@ class SessionsPanel(QWidget):
         # Capture ending snapshot
         backup_cfg = getattr(self._mw._backup_panel, "_config", None) if hasattr(self._mw, "_backup_panel") else None
         end_snap = capture_snapshot(
-            self._mw.prompt_database, eadr_path=None, backup_config=backup_cfg)
+            self._mw.prompt_database, db=self._mw.prompt_database,
+            backup_config=backup_cfg)
 
         self._active_session.end_snapshot = end_snap
         self._active_session.end_time = datetime.now()
@@ -391,8 +413,7 @@ class SessionsPanel(QWidget):
             end_snap,
             self._mw.prompt_database)
         self._active_session.summary = diff
-
-        save_sessions(self._sessions)
+        self._mw.prompt_database.update_session(self._active_session)
 
         # Generate markdown summary
         md = generate_session_summary_markdown(self._active_session, diff)
@@ -410,10 +431,6 @@ class SessionsPanel(QWidget):
         self._active_session = None
         self._refresh_session_tree()
 
-    # ------------------------------------------------------------------
-    # Active-session UI helpers
-    # ------------------------------------------------------------------
-
     def _set_active_session_ui(self, session: ResearchSession):
         """Update widgets to reflect an active or paused session."""
         self._btn_start.setEnabled(False)
@@ -421,18 +438,32 @@ class SessionsPanel(QWidget):
         self._btn_pause.setEnabled(True)
         self._name_label.setText(session.name)
 
-        # Set pause button state
+        # Set pause button state and timer color
         if session.status == "paused":
-            self._btn_pause.setText("Resume")
+            self._btn_pause.setText("\u25b6 Resume")
             self._btn_pause.setToolTip("Resume the session timer")
             self._status_label.setText("\u23f8 Paused")
+            colors = get_theme_colors(current_theme_name())
             self._status_label.setStyleSheet(
-                "color: #ef6c00; font-weight: bold;")
+                f"color: {colors['warning']}; font-weight: bold;")
+            self._elapsed_label.setStyleSheet(
+                "color: palette(mid);"
+                "padding: 4px 16px;"
+                "border: 1px solid palette(mid);"
+                "border-radius: 6px;"
+                "background: palette(base);")
         else:
-            self._btn_pause.setText("Pause")
+            self._btn_pause.setText("\u23f8 Pause")
             self._btn_pause.setToolTip("Pause the session timer")
             self._status_label.setText("")
             self._status_label.setStyleSheet("")
+            colors = get_theme_colors(current_theme_name())
+            self._elapsed_label.setStyleSheet(
+                f"color: {colors['success']};"
+                "padding: 4px 16px;"
+                "border: 1px solid palette(mid);"
+                "border-radius: 6px;"
+                "background: palette(base);")
 
         # Restore notes
         self._notes_edit.clear()
@@ -450,25 +481,33 @@ class SessionsPanel(QWidget):
         self._btn_start.setEnabled(True)
         self._btn_end.setEnabled(False)
         self._btn_pause.setEnabled(False)
-        self._btn_pause.setText("Pause")
+        self._btn_pause.setText("\u23f8 Pause")
+        self._elapsed_label.setStyleSheet(
+            "padding: 4px 16px;"
+            "border: 1px solid palette(mid);"
+            "border-radius: 6px;"
+            "background: palette(base);")
         self._name_label.setText("No active session")
         self._elapsed_label.setText("")
         self._prompt_label.setText("")
         self._status_label.setText("")
         self._status_label.setStyleSheet("")
         self._notes_edit.clear()
+        self.session_state_changed.emit("", "", False)
 
     @Slot()
     def _update_session_timer(self):
         """Refresh elapsed time and prompt delta labels."""
         if not self._active_session:
+            self.session_state_changed.emit("", "", False)
             return
 
         # Format as HH:MM:SS for the prominent timer display
         secs = self._active_session.active_seconds
         h, remainder = divmod(int(secs), 3600)
         m, s = divmod(remainder, 60)
-        self._elapsed_label.setText(f"{h:02d}:{m:02d}:{s:02d}")
+        elapsed_str = f"{h:02d}:{m:02d}:{s:02d}"
+        self._elapsed_label.setText(elapsed_str)
 
         start_count = self._active_session.start_snapshot.get(
             "prompt_count", 0)
@@ -476,13 +515,17 @@ class SessionsPanel(QWidget):
         delta = current_count - start_count
         self._prompt_label.setText(f"\U0001f4ac {delta} prompts")
 
-    # ------------------------------------------------------------------
-    # Session history tree
-    # ------------------------------------------------------------------
+        is_paused = self._active_session.status == "paused"
+        self.session_state_changed.emit(
+            self._active_session.name, elapsed_str, is_paused)
 
     def _refresh_session_tree(self):
         """Rebuild the history model from the sessions list."""
         self._history_model.removeRows(0, self._history_model.rowCount())
+
+        has_sessions = bool(self._sessions)
+        self._sessions_empty_label.setVisible(not has_sessions)
+        self._history_tree.setVisible(has_sessions)
 
         for session in reversed(self._sessions):
             date_str = (session.start_time.strftime("%Y-%m-%d")
@@ -524,10 +567,6 @@ class SessionsPanel(QWidget):
             self._history_model.appendRow(
                 [name_item, date_item, dur_item, prompt_item, status_item])
 
-    # ------------------------------------------------------------------
-    # Selection helper
-    # ------------------------------------------------------------------
-
     def _get_selected_session(self) -> ResearchSession | None:
         """Return the ResearchSession for the currently selected row."""
         indexes = self._history_tree.selectionModel().selectedRows()
@@ -542,10 +581,6 @@ class SessionsPanel(QWidget):
             if s.id == sid:
                 return s
         return None
-
-    # ------------------------------------------------------------------
-    # Double-click / context menu
-    # ------------------------------------------------------------------
 
     @Slot()
     def _on_double_click(self, _index):
@@ -575,10 +610,6 @@ class SessionsPanel(QWidget):
         menu.addSeparator()
         menu.addAction("Delete", self._ctx_delete_session)
         menu.exec(self._history_tree.viewport().mapToGlobal(pos))
-
-    # ------------------------------------------------------------------
-    # Context-menu actions
-    # ------------------------------------------------------------------
 
     @Slot()
     def _ctx_view_summary(self):
@@ -651,7 +682,7 @@ class SessionsPanel(QWidget):
         session.start_time = datetime.now()
 
         self._active_session = session
-        save_sessions(self._sessions)
+        self._mw.prompt_database.update_session(session)
         self._set_active_session_ui(session)
         self._refresh_session_tree()
         self._mw.log(f"Session reopened: '{session.name}'")
@@ -679,13 +710,9 @@ class SessionsPanel(QWidget):
             return
 
         self._sessions = [s for s in self._sessions if s.id != session.id]
-        save_sessions(self._sessions)
+        self._mw.prompt_database.delete_session(session.id)
         self._refresh_session_tree()
         self._mw.log(f"Deleted session: '{session.name}'")
-
-    # ------------------------------------------------------------------
-    # Summary dialog
-    # ------------------------------------------------------------------
 
     def _show_summary_dialog(self, session: ResearchSession, md_text: str):
         """Open a modal dialog displaying the session summary."""
@@ -694,10 +721,6 @@ class SessionsPanel(QWidget):
             export_fn=self._export_session_markdown,
             parent=self)
         dlg.exec()
-
-    # ------------------------------------------------------------------
-    # Export
-    # ------------------------------------------------------------------
 
     def _export_session_markdown(self, session: ResearchSession,
                                  md_text: str):
@@ -720,9 +743,9 @@ class SessionsPanel(QWidget):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(md_text)
             self._mw.log(f"Exported session summary to {path}")
-            QMessageBox.information(
-                self, "Exported",
-                f"Session summary saved to:\n{path}")
+            self._mw.show_toast(
+                f"Session summary saved to: {os.path.basename(path)}",
+                "success")
         except Exception as e:
             logger.error("Error exporting session: %s", e)
             self._mw.log(f"Error exporting session: {e}")

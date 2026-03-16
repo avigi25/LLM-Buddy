@@ -45,20 +45,9 @@ LLM Buddy is a desktop application for capturing, organizing, and analyzing prom
 - **File & Token Management** — Select files and folders, filter by extension, and see real-time token counts. Combine files into a single prompt-ready text block.
 - **Unified Database** — Single SQLite database (`llm_buddy.db`) storing all prompts, eADR notes, sessions, and conversation trees locally.
 
-<!-- SCREENSHOT: Analytics Dashboard — show the charts tab with prompt frequency,
-     LLM distribution pie chart, and token usage trends visible.
-![Analytics Dashboard](docs/images/analytics-dashboard.png)
--->
+<img src="docs/images/Analytics.png" alt="Screenshot" width="1200"/>
 
-<!-- SCREENSHOT: Conversational Forking — show the Prompt Explorer tab with a
-     branching tree visualization containing multiple branches and fork points.
-![Conversational Forking](docs/images/forking-tree.png)
--->
-
-<!-- SCREENSHOT: Theme comparison — side-by-side or stacked showing the same tab
-     in Light, Dark, and Blue Accent themes. Optional but nice to have.
-![Themes](docs/images/themes-comparison.png)
--->
+<img src="docs/images/CF.png" alt="Screenshot" width="1200"/>
 
 ## Installation
 
@@ -73,11 +62,6 @@ install.bat
 ```
 
 The installer creates a virtual environment, installs dependencies, places an **LLM Buddy** shortcut on your Desktop, and optionally configures Claude Desktop MCP integration.
-
-<!-- GIF: Windows installation — show running install.bat from start to finish,
-     ending with the desktop shortcut and app launch. Speed up to ~15-20 seconds.
-![Windows Installation](docs/images/windows-install.gif)
--->
 
 ### macOS / Linux
 
@@ -140,6 +124,8 @@ All capture methods write to the same `llm_buddy.db` database. The GUI auto-refr
 
 Both the user's prompt (input) and the LLM's response (output) are captured and stored together.
 
+<img src="docs/images/prompt history.png" alt="Screenshot" width="1200"/>
+
 ### 1. Chrome Extension (Easiest)
 
 Best for capturing from web-based LLM chat interfaces.
@@ -157,10 +143,7 @@ The extension watches the DOM for the assistant's reply after each prompt submis
 
 **Supported sites:** ChatGPT, Claude, Gemini, Perplexity, Grok, DeepSeek, Le Chat (Mistral), HuggingChat, Meta AI, Copilot, You.com, and Phind.
 
-<!-- GIF: Chrome Extension capture in action — show sending a prompt in ChatGPT/Claude,
-     then the prompt + response appearing in the Prompt Tracking tab automatically.
-![Chrome Extension Capture](docs/images/extension-capture.gif)
--->
+<img src="docs/images/extension popup.png" alt="Screenshot" width="300"/>
 
 ### 2. Claude Desktop (MCP)
 
@@ -183,11 +166,6 @@ The MCP server exposes the following tools to Claude Desktop:
 | `list_prompts` | List the most recent recorded prompts |
 | `test_database_write` | Verify write access to the database |
 
-<!-- SCREENSHOT: Claude Desktop with LLM Buddy MCP active — show Claude Desktop
-     with a conversation where prompts are being silently recorded. Or show the
-     Claude Desktop MCP config JSON.
-![Claude Desktop MCP](docs/images/mcp-claude-desktop.png)
--->
 
 ### 3. HTTPS Proxy (Advanced)
 
@@ -196,11 +174,6 @@ Best for capturing API-level traffic including programmatic LLM calls.
 In the **Prompt Tracking** tab, click **Start Proxy** in the Capture Sources section. This starts a mitmproxy instance on port 8080 and configures the system proxy. Both requests and responses are parsed and recorded. The proxy is automatically disabled when you stop it or close the app.
 
 **Supported services:** OpenAI, Anthropic, Google Gemini, Perplexity, Grok/xAI, Mistral, DeepSeek, OpenRouter, Cohere, Together AI, Groq, DeepInfra, HuggingChat, Meta AI, Microsoft Copilot, You.com, Phind, and any OpenAI-compatible API.
-
-<!-- GIF: Proxy capture — show clicking Start Proxy in the GUI, then making an API
-     call (e.g. curl or a Python script), and the prompt appearing in the tracker.
-![Proxy Capture](docs/images/proxy-capture.gif)
--->
 
 ### 4. Manual Entry
 
@@ -221,11 +194,7 @@ The Flask API server (started via `llm-buddy server` or the GUI's **Start Server
 
 ## GUI Tabs
 
-<!-- SCREENSHOT: Tab bar showing all 12 tabs, or a 2x3 grid of screenshots showing
-     the most important tabs: Prompt Tracking, Prompt Explorer, Sessions, Analytics,
-     Auto-Backup, and Research Notes.
-![GUI Tabs Overview](docs/images/gui-tabs-overview.png)
--->
+<img src="docs/images/Tabs.png" alt="Screenshot" width="1200"/>
 
 | Tab | Purpose |
 |-----|---------|

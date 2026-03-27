@@ -5,7 +5,7 @@ A Computer-Aided Method Engineering (CAME) tool for documenting LLM-augmented re
 [![DOI](http://img.shields.io/badge/DOI-10.5281/zenodo.1135937826-1073c8?labelColor=000000)](https://doi.org/10.5281/zenodo.18274813)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-3.1.0-green)](https://github.com/avigi25/LLM-Buddy/releases)
+[![Version](https://img.shields.io/badge/version-3.1.1-green)](https://github.com/avigi25/LLM-Buddy/releases)
 
 ## Research Context
 
@@ -23,7 +23,7 @@ https://github.com/user-attachments/assets/784748b0-12cc-47bb-b325-5cfb57190743
 
 Link to download the video demo is available here: [Demo Video](demo/LLM_Buddy_Demo.mp4)
 
-Link to download an LLM-readable markdown snapshot of the codebase for inspection: [Single File Source Code](research-artifacts/llm-buddy-codebase-snapshot-v3.1.0.md)
+Link to download an LLM-readable markdown snapshot of the codebase for inspection: [Single File Source Code](research-artifacts/llm-buddy-codebase-snapshot-v3.1.1.md)
 
 ## Overview
 
@@ -365,7 +365,15 @@ If you use LLM Buddy in your research, please cite:
          for Enhanced Data Quality and Reconciliation},
   author={Vigil, Anthony Taeyang},
   year={2026},
-  school={University of South Florida}
+  school={University of South Florida},
+  journal={ProQuest Dissertations and Theses},
+  pages={149},
+  keywords={Business intelligence; Data validation; Large Language Models; Vendor reconciliation; Information science;
+  Computer science; Business administration; Artificial intelligence; 0310:Business administration; 0723:Information science;
+  0984:Computer science; 0800:Artificial intelligence},
+  isbn={9798277445358},
+  language={English},
+  url={https://www.proquest.com/dissertations-theses/adaptive-multi-agent-intelligence-dynamic-data/docview/3321284878/se-2},
 }
 ```
 
@@ -378,7 +386,7 @@ For the tool itself:
            for LLM-Augmented Research},
   year = {2025},
   url = {https://github.com/avigi25/LLM-Buddy},
-  version = {3.1.0}
+  version = {3.1.1}
 }
 ```
 

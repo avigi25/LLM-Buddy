@@ -21,6 +21,8 @@ A prototype paper, *"LLM Buddy: An AI-Augmented Research Environment for Auditab
 
 https://github.com/user-attachments/assets/784748b0-12cc-47bb-b325-5cfb57190743
 
+Link to LLM Buddy's GPT to ask questions about the application is available here: [LLM Buddy GPT](https://chatgpt.com/g/g-69d1e16ca3588191883ac624ed804ad3-llm-buddy-ai-augmented-research-environment)
+
 Link to download the video demo is available here: [Demo Video](demo/LLM_Buddy_Demo.mp4)
 
 Link to download an LLM-readable markdown snapshot of the codebase for inspection: [Single File Source Code](research-artifacts/llm-buddy-codebase-snapshot-v3.1.1.md)
